@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audit: {{.Bundle.RunID}}</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            line-height: 1.5;
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+            color: #333;
+        }
+        h1 { margin-bottom: 5px; font-size: 1.3em; }
+        h2 { margin-top: 30px; margin-bottom: 10px; font-size: 1.1em; color: #555; }
+        .nav-links { margin-bottom: 20px; }
+        .nav-links a {
+            display: inline-block;
+            padding: 8px 16px;
+            background: #3b82f6;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            font-size: 0.9em;
+            font-weight: 500;
+            margin-right: 10px;
+        }
+        .nav-links a:hover { background: #2563eb; }
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .meta-grid {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 4px 16px;
+            font-size: 0.9em;
+        }
+        .meta-grid dt { font-weight: 600; color: #555; }
+        .meta-grid dd { margin: 0; }
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.75em;
+            font-weight: 500;
+        }
+        .badge-success { background: #dcfce7; color: #15803d; }
+        .badge-failure { background: #fee2e2; color: #b91c1c; }
+        .badge-dangerous { background: #fef3c7; color: #b45309; }
+        .output {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 4px;
+            padding: 12px;
+            font-family: "SF Mono", Monaco, Consolas, monospace;
+            font-size: 0.85em;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        .file-list { list-style: none; padding: 0; }
+        .file-list li {
+            padding: 4px 0;
+            font-family: "SF Mono", Monaco, Consolas, monospace;
+            font-size: 0.85em;
+        }
+        .file-list a { color: #3b82f6; text-decoration: none; }
+        .file-list a:hover { text-decoration: underline; }
+        .file-size { color: #9ca3af; margin-left: 8px; }
+        .cmd-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+        .cmd-table th, .cmd-table td {
+            text-align: left;
+            padding: 6px 10px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        .cmd-table th { color: #666; font-size: 0.9em; }
+        .cmd-table td { font-family: "SF Mono", Monaco, Consolas, monospace; }
+        .codex-cmd { margin-bottom: 8px; border: 1px solid #e5e7eb; border-radius: 6px; overflow: hidden; }
+        .codex-cmd-header {
+            background: #f1f5f9;
+            padding: 8px 12px;
+            font-family: "SF Mono", Monaco, Consolas, monospace;
+            font-size: 0.85em;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .codex-cmd-header.failed { background: #fef2f2; }
+        .codex-cmd-output {
+            padding: 8px 12px;
+            font-family: "SF Mono", Monaco, Consolas, monospace;
+            font-size: 0.8em;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 300px;
+            overflow-y: auto;
+            background: #fafafa;
+        }
+        .header-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 5px;
+        }
+        .retry-btn {
+            display: inline-block;
+            padding: 6px 14px;
+            background: #f59e0b;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.85em;
+            font-weight: 500;
+            cursor: pointer;
+        }
+        .retry-btn:hover { background: #d97706; }
+    </style>
+</head>
+<body>
+    <div class="nav-links">
+        {{if gt (len .Projects) 1}}<a href="/">Projects</a>{{end}}
+        <a href="/projects/{{.Project.Name}}/">Audit Runs</a>
+        <a href="/projects/{{.Project.Name}}/state">PR State</a>
+    </div>
+
+    <div class="header-row">
+        <h1>{{.Bundle.RunID}}</h1>
+        {{$pr := extractPR .Bundle.RunID}}
+        {{if $pr}}
+        <form method="POST" action="/projects/{{.Project.Name}}/state/rerun" onsubmit="return confirm('Remove PR {{$pr}} from processed state and restart the service?');">
+            <input type="hidden" name="pr" value="{{$pr}}">
+            <button type="submit" class="retry-btn">Retry PR {{$pr}}</button>
+        </form>
+        {{end}}
+    </div>
+
+    <div class="card">
+        <dl class="meta-grid">
+            <dt>Started</dt><dd>{{runTime .Bundle.RunID}}</dd>
+            {{if and .Bundle.Summary .Bundle.Summary.Source}}
+            <dt>Source</dt><dd>{{.Bundle.Summary.Source}}</dd>
+            {{end}}
+            {{if and .Bundle.Summary .Bundle.Summary.Label}}
+            <dt>Label</dt><dd>{{.Bundle.Summary.Label}}</dd>
+            {{end}}
+            {{if and .Bundle.Summary (ne .Bundle.Summary.DurationSeconds 0)}}
+            <dt>Duration</dt><dd>{{formatDuration .Bundle.Summary.DurationSeconds}}</dd>
+            {{end}}
+            {{if and .Bundle.Summary (ne .Bundle.Summary.ExitCode 0)}}
+            <dt>Exit Code</dt>
+            <dd><span class="badge badge-failure">{{.Bundle.Summary.ExitCode}}</span></dd>
+            {{end}}
+            {{if and .Bundle.Summary .Bundle.Summary.Dangerous}}
+            <dt>Dangerous</dt>
+            <dd><span class="badge badge-dangerous">yes</span></dd>
+            {{end}}
+        </dl>
+    </div>
+
+    {{if .Prompt}}
+    <h2>Prompt</h2>
+    <div class="card">
+        <div class="output">{{.Prompt}}</div>
+    </div>
+    {{end}}
+
+    {{if .AgentMessage}}
+    <h2>Agent Result</h2>
+    <div class="card">
+        <div class="output">{{.AgentMessage}}</div>
+    </div>
+    {{end}}
+
+    {{if .CodexCommands}}
+    <h2>Commands ({{len .CodexCommands}})</h2>
+    <div class="card">
+        {{range .CodexCommands}}
+        <div class="codex-cmd">
+            <div class="codex-cmd-header{{if ne .ExitCode 0}} failed{{end}}">
+                <span>{{.Command}}</span>
+                {{if ne .ExitCode 0}}
+                    <span class="badge badge-failure">exit {{.ExitCode}}</span>
+                {{else}}
+                    <span class="badge badge-success">exit 0</span>
+                {{end}}
+            </div>
+            {{if .Output}}
+            <div class="codex-cmd-output">{{.Output}}</div>
+            {{end}}
+        </div>
+        {{end}}
+    </div>
+    {{else if .Commands}}
+    <h2>Commands ({{len .Commands}})</h2>
+    <div class="card">
+        <table class="cmd-table">
+            <thead><tr><th>Name</th><th>Call ID</th><th>Arguments</th></tr></thead>
+            <tbody>
+            {{range .Commands}}
+                <tr>
+                    <td>{{.Name}}</td>
+                    <td>{{truncate .CallID 12}}</td>
+                    <td>{{truncate (printf "%s" .Arguments) 120}}</td>
+                </tr>
+            {{end}}
+            </tbody>
+        </table>
+    </div>
+    {{end}}
+
+    {{if .LastMessage}}
+    <h2>Last Message</h2>
+    <div class="card">
+        <div class="output">{{.LastMessage}}</div>
+    </div>
+    {{end}}
+
+    {{if .Stderr}}
+    <h2>Stderr</h2>
+    <div class="card">
+        <div class="output">{{.Stderr}}</div>
+    </div>
+    {{end}}
+
+    <h2>Files</h2>
+    <div class="card">
+        <ul class="file-list">
+        {{range .Bundle.FileInfo}}
+            <li><a href="/projects/{{$.Project.Name}}/audit/{{$.Bundle.RunID}}/{{.Name}}">{{.Name}}</a><span class="file-size">{{formatSize .Size}}</span></li>
+        {{end}}
+        </ul>
+    </div>
+
+    {{template "footer" .}}
+</body>
+</html>

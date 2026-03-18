@@ -1,0 +1,11 @@
+{{define "footer"}}
+    <footer style="margin-top: 40px; padding: 12px 0; border-top: 1px solid #e5e7eb; font-size: 0.75em; color: #9ca3af; text-align: center;">
+        <span>burkebot v{{serverVersion}}</span>
+        <span style="margin: 0 6px;">&middot;</span>
+        <span>{{gitCommit}}</span>
+        <span style="margin: 0 6px;">&middot;</span>
+        <span>built {{buildDate}}</span>
+        <span style="margin: 0 6px;">&middot;</span>
+        <span>server {{renderDurationMs .RenderStart}}ms</span>
+    </footer>
+{{end}}

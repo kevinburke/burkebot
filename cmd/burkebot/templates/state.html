@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Burkebot PR State</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            line-height: 1.5;
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+            color: #333;
+        }
+        h1 { margin-bottom: 5px; }
+        h2 { margin-top: 30px; margin-bottom: 15px; font-size: 1.1em; color: #555; }
+        .nav-links { margin-bottom: 20px; }
+        .nav-links a, .nav-links span.current {
+            display: inline-block;
+            padding: 8px 16px;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            font-size: 0.9em;
+            font-weight: 500;
+            margin-right: 10px;
+        }
+        .nav-links a { background: #3b82f6; }
+        .nav-links a:hover { background: #2563eb; }
+        .nav-links span.current { background: #9ca3af; cursor: default; }
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .flash {
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-bottom: 16px;
+            font-size: 0.9em;
+        }
+        .flash-success { background: #dcfce7; color: #15803d; }
+        .flash-error { background: #fee2e2; color: #b91c1c; }
+        .state-table { width: 100%; border-collapse: collapse; }
+        .state-table th, .state-table td {
+            text-align: left;
+            padding: 8px 12px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        .state-table th { font-size: 0.85em; color: #666; }
+        .state-table td { font-family: "SF Mono", Monaco, Consolas, monospace; font-size: 0.85em; }
+        button {
+            padding: 6px 14px;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.85em;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        .btn-rerun { background: #3b82f6; color: white; }
+        .btn-rerun:hover { background: #2563eb; }
+        .btn-danger { background: #ef4444; color: white; }
+        .btn-danger:hover { background: #dc2626; }
+        .empty { color: #888; font-style: italic; padding: 10px 0; }
+        .actions { margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h1>{{.Project.Name}} &mdash; PR State</h1>
+
+    <div class="nav-links">
+        {{if gt (len .Projects) 1}}<a href="/">Projects</a>{{end}}
+        <a href="/projects/{{.Project.Name}}/">Audit Runs</a>
+        <span class="current">PR State</span>
+    </div>
+
+    {{if .Message}}
+    <div class="flash {{if .IsError}}flash-error{{else}}flash-success{{end}}">
+        {{.Message}}
+    </div>
+    {{end}}
+
+    {{if .State}}
+    <div class="card">
+        <table class="state-table">
+            <thead><tr><th>PR</th><th>Head SHA</th><th></th></tr></thead>
+            <tbody>
+            {{range $pr, $sha := .State}}
+                <tr>
+                    <td>#{{$pr}}</td>
+                    <td>{{$sha}}</td>
+                    <td>
+                        <form method="POST" action="/projects/{{$.Project.Name}}/state/rerun" style="display:inline">
+                            <input type="hidden" name="pr" value="{{$pr}}">
+                            <button type="submit" class="btn-rerun">Rerun</button>
+                        </form>
+                    </td>
+                </tr>
+            {{end}}
+            </tbody>
+        </table>
+    </div>
+    {{else}}
+    <p class="empty">No processed PRs</p>
+    {{end}}
+
+    <div class="actions">
+        <form method="POST" action="/projects/{{.Project.Name}}/state/rerun-all" onsubmit="return confirm('Reset all processed PR state and start a new run?')">
+            <button type="submit" class="btn-danger">Rerun All</button>
+        </form>
+    </div>
+
+    {{template "footer" .}}
+</body>
+</html>
