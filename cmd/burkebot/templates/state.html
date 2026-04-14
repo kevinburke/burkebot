@@ -96,6 +96,7 @@
                     <td>{{$sha}}</td>
                     <td>
                         <form method="POST" action="/projects/{{$.Project.Name}}/state/rerun" style="display:inline">
+                            <input type="hidden" name="csrf_token" value="{{$.RerunCSRFToken}}">
                             <input type="hidden" name="pr" value="{{$pr}}">
                             <button type="submit" class="btn-rerun">Rerun</button>
                         </form>
@@ -111,6 +112,7 @@
 
     <div class="actions">
         <form method="POST" action="/projects/{{.Project.Name}}/state/rerun-all" onsubmit="return confirm('Reset all processed PR state and start a new run?')">
+            <input type="hidden" name="csrf_token" value="{{.RerunAllCSRFToken}}">
             <button type="submit" class="btn-danger">Rerun All</button>
         </form>
     </div>

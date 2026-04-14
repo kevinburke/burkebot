@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Project represents one managed repo/task set.
@@ -24,6 +25,10 @@ type Project struct {
 	// Service is the systemd service name to start for reruns.
 	// Defaults to "burkebot.service" if empty.
 	Service string `json:"service"`
+
+	// RepoDir is the local checkout path used for ad hoc prompt runs.
+	// If empty, the dashboard derives it from Repo or Name.
+	RepoDir string `json:"repo_dir"`
 }
 
 // ServiceName returns the systemd service to use for this project.
@@ -32,6 +37,29 @@ func (p *Project) ServiceName() string {
 		return p.Service
 	}
 	return "burkebot.service"
+}
+
+// RepoBaseName returns the local checkout directory name for the project.
+func (p *Project) RepoBaseName() string {
+	if p.RepoDir != "" {
+		return filepath.Base(p.RepoDir)
+	}
+	if p.Repo != "" {
+		return filepath.Base(strings.TrimSpace(p.Repo))
+	}
+	return p.Name
+}
+
+// RepoDirectory resolves the local checkout path for ad hoc prompt runs.
+func (p *Project) RepoDirectory(repoRoot string) string {
+	if p.RepoDir != "" {
+		return p.RepoDir
+	}
+	base := p.RepoBaseName()
+	if repoRoot == "" || base == "" {
+		return ""
+	}
+	return filepath.Join(repoRoot, base)
 }
 
 // loadProjects reads a projects.json config file. If the file does not exist,

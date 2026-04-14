@@ -25,10 +25,14 @@ const maxRawFileSize = 5 * 1024 * 1024 // 5 MB
 
 // Server provides the web UI for Burkebot audit and state management.
 type Server struct {
-	projects []Project
-	tmpl     *template.Template
-	build    buildInfo
-	logger   *slog.Logger
+	projects  []Project
+	tmpl      *template.Template
+	build     buildInfo
+	logger    *slog.Logger
+	auth      *basicAuthConfig
+	csrfKey   []byte
+	prompt    promptRunnerConfig
+	runPrompt func(*slog.Logger, promptRunnerConfig, Project, promptPolicy, string) (promptRunResult, error)
 }
 
 func (s *Server) projectByName(name string) *Project {
@@ -50,6 +54,14 @@ func runDashboard(args []string) {
 	projectsFile := flagSet.String("projects", "", "Path to projects.json config file")
 	certFile := flagSet.String("cert-file", "", "Path to TLS certificate file (enables HTTPS)")
 	keyFile := flagSet.String("key-file", "", "Path to TLS private key file")
+	authUser := flagSet.String("auth-user", "", "HTTP basic auth username")
+	authPasswordFile := flagSet.String("auth-password-file", "", "Path to the HTTP basic auth password file")
+	enablePromptUI := flagSet.Bool("enable-prompt-ui", false, "Enable ad hoc prompt submission UI")
+	repoRoot := flagSet.String("repo-root", "/srv/burkebot", "Default repo checkout root for prompt submissions")
+	promptRunner := flagSet.String("prompt-runner", "/usr/local/bin/burkebot-codex-run", "Path to the burkebot prompt runner")
+	envdirBinary := flagSet.String("envdir-binary", "/opt/burkebot/bin/envdir", "Path to envdir for GitHub-authenticated prompt runs")
+	envDir := flagSet.String("env-dir", "/opt/burkebot/env", "Envdir directory used for GitHub-authenticated prompt runs")
+	botHome := flagSet.String("bot-home", "/home/burkebot", "Home directory for the burkebot user")
 	showVersion := flagSet.Bool("version", false, "Print version and exit")
 	flagSet.Parse(args)
 
@@ -60,6 +72,36 @@ func runDashboard(args []string) {
 
 	logger := slog.Default()
 	bi := readBuildInfo()
+	var auth *basicAuthConfig
+	if *authUser != "" || *authPasswordFile != "" {
+		if *authUser == "" || *authPasswordFile == "" {
+			logger.Error("both --auth-user and --auth-password-file are required together")
+			os.Exit(1)
+		}
+		password, err := readSecretFile(*authPasswordFile)
+		if err != nil {
+			logger.Error("failed to read auth password", "error", err, "path", *authPasswordFile)
+			os.Exit(1)
+		}
+		auth = &basicAuthConfig{
+			Username: *authUser,
+			Password: password,
+		}
+	}
+
+	var csrfKey []byte
+	if auth != nil {
+		secret, err := randomToken(32)
+		if err != nil {
+			logger.Error("failed to initialize csrf key", "error", err)
+			os.Exit(1)
+		}
+		csrfKey = []byte(secret)
+	}
+	if *enablePromptUI && auth == nil {
+		logger.Error("prompt UI requires --auth-user and --auth-password-file")
+		os.Exit(1)
+	}
 
 	// Resolve projects.
 	var projects []Project
@@ -101,6 +143,16 @@ func runDashboard(args []string) {
 		tmpl:     tmpl,
 		build:    bi,
 		logger:   logger,
+		auth:     auth,
+		csrfKey:  csrfKey,
+		prompt: promptRunnerConfig{
+			Enabled:      *enablePromptUI,
+			RepoRoot:     *repoRoot,
+			RunnerPath:   *promptRunner,
+			EnvdirBinary: *envdirBinary,
+			EnvDir:       *envDir,
+			BotHome:      *botHome,
+		},
 	}
 
 	mux := s.registerRoutes()
@@ -195,6 +247,10 @@ func (s *Server) registerRoutes() *http.ServeMux {
 // on the URL path. We parse the path manually instead of relying on Go 1.22+
 // enhanced routing patterns, which are not working reliably with Go tip.
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
+	if !s.authenticate(w, r) {
+		return
+	}
+
 	path := strings.TrimRight(r.URL.Path, "/")
 
 	// GET /
@@ -207,8 +263,8 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// All other routes start with /p/<project>/...
-	// Split: ["", "p", project, ...]
+	// All other routes start with /projects/<project>/...
+	// Split: ["", "projects", project, ...]
 	parts := strings.Split(path, "/")
 	if len(parts) < 3 || parts[1] != "projects" {
 		http.NotFound(w, r)
@@ -240,6 +296,14 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleState(w, r, proj)
+
+	// POST /projects/<project>/prompt
+	case len(rest) == 1 && rest[0] == "prompt":
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handlePrompt(w, r, proj)
 
 	// POST /p/<project>/state/rerun
 	case len(rest) == 2 && rest[0] == "state" && rest[1] == "rerun":
@@ -309,10 +373,14 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 type projectData struct {
 	pageContext
-	Project  Project
-	Projects []Project
-	Runs     []AuditBundle
-	State    ProcessedPRState
+	Project         Project
+	Projects        []Project
+	Runs            []AuditBundle
+	State           ProcessedPRState
+	Message         string
+	IsError         bool
+	PromptEnabled   bool
+	PromptCSRFToken string
 }
 
 func (s *Server) handleProject(w http.ResponseWriter, r *http.Request, proj *Project) {
@@ -333,25 +401,30 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request, proj *Pro
 	}
 
 	s.render(w, "project.html", projectData{
-		pageContext: newPageContext(),
-		Project:     *proj,
-		Projects:    s.projects,
-		Runs:        runs,
-		State:       state,
+		pageContext:     newPageContext(),
+		Project:         *proj,
+		Projects:        s.projects,
+		Runs:            runs,
+		State:           state,
+		Message:         r.URL.Query().Get("message"),
+		IsError:         r.URL.Query().Get("error") == "1",
+		PromptEnabled:   s.prompt.Enabled,
+		PromptCSRFToken: s.csrfToken(w, r, "/projects/"+proj.Name+"/prompt"),
 	})
 }
 
 type auditDetailData struct {
 	pageContext
-	Project       Project
-	Projects      []Project
-	Bundle        AuditBundle
-	Prompt        string
-	LastMessage   string
-	Commands      []Command
-	CodexCommands []CodexCommand
-	AgentMessage  string
-	Stderr        string
+	Project        Project
+	Projects       []Project
+	Bundle         AuditBundle
+	Prompt         string
+	LastMessage    string
+	Commands       []Command
+	CodexCommands  []CodexCommand
+	AgentMessage   string
+	Stderr         string
+	RerunCSRFToken string
 }
 
 func (s *Server) handleAuditDetail(w http.ResponseWriter, r *http.Request, proj *Project, runID string) {
@@ -367,10 +440,11 @@ func (s *Server) handleAuditDetail(w http.ResponseWriter, r *http.Request, proj 
 	}
 
 	data := auditDetailData{
-		pageContext: newPageContext(),
-		Project:     *proj,
-		Projects:    s.projects,
-		Bundle:      *bundle,
+		pageContext:    newPageContext(),
+		Project:        *proj,
+		Projects:       s.projects,
+		Bundle:         *bundle,
+		RerunCSRFToken: s.csrfToken(w, r, "/projects/"+proj.Name+"/state/rerun"),
 	}
 
 	dir := filepath.Join(proj.AuditDir, runID)
@@ -436,11 +510,13 @@ func (s *Server) handleAuditFile(w http.ResponseWriter, r *http.Request, proj *P
 
 type stateData struct {
 	pageContext
-	Project  Project
-	Projects []Project
-	State    ProcessedPRState
-	Message  string
-	IsError  bool
+	Project           Project
+	Projects          []Project
+	State             ProcessedPRState
+	Message           string
+	IsError           bool
+	RerunCSRFToken    string
+	RerunAllCSRFToken string
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request, proj *Project) {
@@ -452,17 +528,22 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request, proj *Proje
 	}
 
 	s.render(w, "state.html", stateData{
-		pageContext: newPageContext(),
-		Project:     *proj,
-		Projects:    s.projects,
-		State:       state,
-		Message:     r.URL.Query().Get("message"),
-		IsError:     r.URL.Query().Get("error") == "1",
+		pageContext:       newPageContext(),
+		Project:           *proj,
+		Projects:          s.projects,
+		State:             state,
+		Message:           r.URL.Query().Get("message"),
+		IsError:           r.URL.Query().Get("error") == "1",
+		RerunCSRFToken:    s.csrfToken(w, r, "/projects/"+proj.Name+"/state/rerun"),
+		RerunAllCSRFToken: s.csrfToken(w, r, "/projects/"+proj.Name+"/state/rerun-all"),
 	})
 }
 
 func (s *Server) handleRerun(w http.ResponseWriter, r *http.Request, proj *Project) {
 	base := "/projects/" + proj.Name + "/state"
+	if !s.verifyCSRF(w, r, "/projects/"+proj.Name+"/state/rerun") {
+		return
+	}
 	pr := strings.TrimSpace(r.FormValue("pr"))
 	if pr == "" {
 		http.Redirect(w, r, base+"?message=Missing+PR+number&error=1", http.StatusSeeOther)
@@ -476,28 +557,30 @@ func (s *Server) handleRerun(w http.ResponseWriter, r *http.Request, proj *Proje
 		return
 	}
 
-	if _, ok := state[pr]; !ok {
-		http.Redirect(w, r, base+"?message=PR+"+pr+"+not+in+state&error=1", http.StatusSeeOther)
-		return
-	}
-
-	delete(state, pr)
-	if err := saveProcessedPRs(proj.StateFile, state); err != nil {
-		s.logger.Error("failed to save state", "error", err, "project", proj.Name)
-		http.Redirect(w, r, base+"?message=Failed+to+save+state&error=1", http.StatusSeeOther)
-		return
+	msg := "Started+" + proj.ServiceName()
+	if _, ok := state[pr]; ok {
+		delete(state, pr)
+		if err := saveProcessedPRs(proj.StateFile, state); err != nil {
+			s.logger.Error("failed to save state", "error", err, "project", proj.Name)
+			http.Redirect(w, r, base+"?message=Failed+to+save+state&error=1", http.StatusSeeOther)
+			return
+		}
+		msg = "Removed+PR+" + pr + "+and+started+" + proj.ServiceName()
 	}
 
 	if err := startBurkebotService(s.logger, proj.ServiceName()); err != nil {
-		http.Redirect(w, r, base+"?message=State+updated+but+service+start+failed&error=1", http.StatusSeeOther)
+		http.Redirect(w, r, base+"?message=Service+start+failed&error=1", http.StatusSeeOther)
 		return
 	}
 
-	http.Redirect(w, r, base+"?message=Removed+PR+"+pr+"+and+started+"+proj.ServiceName(), http.StatusSeeOther)
+	http.Redirect(w, r, base+"?message="+msg, http.StatusSeeOther)
 }
 
 func (s *Server) handleRerunAll(w http.ResponseWriter, r *http.Request, proj *Project) {
 	base := "/projects/" + proj.Name + "/state"
+	if !s.verifyCSRF(w, r, "/projects/"+proj.Name+"/state/rerun-all") {
+		return
+	}
 	if err := saveProcessedPRs(proj.StateFile, make(ProcessedPRState)); err != nil {
 		s.logger.Error("failed to save state", "error", err, "project", proj.Name)
 		http.Redirect(w, r, base+"?message=Failed+to+reset+state&error=1", http.StatusSeeOther)

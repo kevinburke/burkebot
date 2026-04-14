@@ -312,6 +312,35 @@ func TestHandleRerunMissingPR(t *testing.T) {
 	}
 }
 
+func TestHandleRerunPRNotInState(t *testing.T) {
+	tmp := t.TempDir()
+	stateFile := filepath.Join(tmp, "state.json")
+	os.WriteFile(stateFile, []byte(`{}`), 0o644)
+
+	s := newTestServer(t, []Project{{Name: "r", AuditDir: filepath.Join(tmp, "audit"), StateFile: stateFile}})
+	os.MkdirAll(filepath.Join(tmp, "audit"), 0o755)
+	mux := s.registerRoutes()
+
+	form := url.Values{"pr": {"2"}}
+	req := httptest.NewRequest("POST", "/projects/r/state/rerun", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", w.Code)
+	}
+
+	// State should still be empty (PR was not in state, nothing to remove).
+	state, err := loadProcessedPRs(stateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state) != 0 {
+		t.Fatalf("expected empty state, got %v", state)
+	}
+}
+
 func TestHandleRerunAll(t *testing.T) {
 	tmp := t.TempDir()
 	stateFile := filepath.Join(tmp, "state.json")

@@ -137,6 +137,7 @@
         {{$pr := extractPR .Bundle.RunID}}
         {{if $pr}}
         <form method="POST" action="/projects/{{.Project.Name}}/state/rerun" onsubmit="return confirm('Remove PR {{$pr}} from processed state and restart the service?');">
+            <input type="hidden" name="csrf_token" value="{{.RerunCSRFToken}}">
             <input type="hidden" name="pr" value="{{$pr}}">
             <button type="submit" class="retry-btn">Retry PR {{$pr}}</button>
         </form>
