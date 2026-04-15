@@ -188,8 +188,8 @@
         <table class="state-table">
             <thead><tr><th>PR</th><th>Head SHA</th></tr></thead>
             <tbody>
-            {{range $pr, $sha := .State}}
-                <tr><td>#{{$pr}}</td><td>{{truncate $sha 12}}</td></tr>
+            {{range $pr, $entry := .State}}
+                <tr><td>#{{$pr}}</td><td>{{truncate $entry.HeadSHA 12}}</td></tr>
             {{end}}
             </tbody>
         </table>

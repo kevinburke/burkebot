@@ -106,7 +106,7 @@ func TestHandleProject(t *testing.T) {
 	tmp := t.TempDir()
 	auditDir := filepath.Join(tmp, "audit")
 	stateFile := filepath.Join(tmp, "state.json")
-	os.WriteFile(stateFile, []byte(`{"42":"abc123"}`), 0o644)
+	os.WriteFile(stateFile, []byte(`{"42":{"head_sha":"abc123","base_sha":"def456","recreate_requested":false}}`), 0o644)
 	writeTestAudit(t, auditDir, "20260315T120000Z-pr-returns-pr-42")
 
 	s := newTestServer(t, []Project{{
@@ -215,7 +215,7 @@ func TestHandleAuditFilePathTraversal(t *testing.T) {
 func TestHandleState(t *testing.T) {
 	tmp := t.TempDir()
 	stateFile := filepath.Join(tmp, "state.json")
-	os.WriteFile(stateFile, []byte(`{"5":"sha5","9":"sha9"}`), 0o644)
+	os.WriteFile(stateFile, []byte(`{"5":{"head_sha":"sha5","base_sha":"base5","recreate_requested":false},"9":{"head_sha":"sha9","base_sha":"base9","recreate_requested":false}}`), 0o644)
 
 	s := newTestServer(t, []Project{{Name: "r", AuditDir: filepath.Join(tmp, "audit"), StateFile: stateFile}})
 	os.MkdirAll(filepath.Join(tmp, "audit"), 0o755)
@@ -260,7 +260,7 @@ func TestHandleStateFlash(t *testing.T) {
 func TestHandleRerun(t *testing.T) {
 	tmp := t.TempDir()
 	stateFile := filepath.Join(tmp, "state.json")
-	os.WriteFile(stateFile, []byte(`{"5":"sha5","9":"sha9"}`), 0o644)
+	os.WriteFile(stateFile, []byte(`{"5":{"head_sha":"sha5","base_sha":"base5","recreate_requested":false},"9":{"head_sha":"sha9","base_sha":"base9","recreate_requested":false}}`), 0o644)
 
 	s := newTestServer(t, []Project{{Name: "r", AuditDir: filepath.Join(tmp, "audit"), StateFile: stateFile}})
 	os.MkdirAll(filepath.Join(tmp, "audit"), 0o755)
@@ -344,7 +344,7 @@ func TestHandleRerunPRNotInState(t *testing.T) {
 func TestHandleRerunAll(t *testing.T) {
 	tmp := t.TempDir()
 	stateFile := filepath.Join(tmp, "state.json")
-	os.WriteFile(stateFile, []byte(`{"5":"sha5","9":"sha9"}`), 0o644)
+	os.WriteFile(stateFile, []byte(`{"5":{"head_sha":"sha5","base_sha":"base5","recreate_requested":false},"9":{"head_sha":"sha9","base_sha":"base9","recreate_requested":false}}`), 0o644)
 
 	s := newTestServer(t, []Project{{Name: "r", AuditDir: filepath.Join(tmp, "audit"), StateFile: stateFile}})
 	os.MkdirAll(filepath.Join(tmp, "audit"), 0o755)
@@ -410,7 +410,10 @@ func TestSaveProcessedPRsAtomic(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "state.json")
 
-	state := ProcessedPRState{"1": "aaa", "2": "bbb"}
+	state := ProcessedPRState{
+		"1": {HeadSHA: "aaa", BaseSHA: "aaabase"},
+		"2": {HeadSHA: "bbb", BaseSHA: "bbbbase", RecreateRequested: true},
+	}
 	if err := saveProcessedPRs(path, state); err != nil {
 		t.Fatal(err)
 	}
@@ -419,7 +422,7 @@ func TestSaveProcessedPRsAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded["1"] != "aaa" || loaded["2"] != "bbb" {
+	if loaded["1"].HeadSHA != "aaa" || loaded["2"].HeadSHA != "bbb" || !loaded["2"].RecreateRequested {
 		t.Fatalf("round-trip failed: %v", loaded)
 	}
 }

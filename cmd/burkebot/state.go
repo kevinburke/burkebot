@@ -9,8 +9,15 @@ import (
 	"path/filepath"
 )
 
-// ProcessedPRState maps PR number (as string) to head SHA.
-type ProcessedPRState map[string]string
+// ProcessedPREntry is the per-PR record written by burkebot-run.
+type ProcessedPREntry struct {
+	HeadSHA           string `json:"head_sha"`
+	BaseSHA           string `json:"base_sha"`
+	RecreateRequested bool   `json:"recreate_requested"`
+}
+
+// ProcessedPRState maps PR number (as string) to the recorded entry.
+type ProcessedPRState map[string]ProcessedPREntry
 
 // loadProcessedPRs reads the processed-prs.json state file.
 // Returns an empty map if the file does not exist.
