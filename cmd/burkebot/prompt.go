@@ -1,20 +1,15 @@
 package main
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
-
-var auditRunRE = regexp.MustCompile(`(?m)^Audit run: (\S+)$`)
 
 type promptRunnerConfig struct {
 	Enabled      bool
@@ -30,11 +25,6 @@ type promptPolicy struct {
 	WorkspaceWrite    bool
 	GitHubCredentials bool
 	Dangerous         bool
-}
-
-type promptRunResult struct {
-	RunID  string
-	Output string
 }
 
 func (p promptPolicy) labelSuffix() string {
@@ -102,42 +92,32 @@ func uniqueNonEmptyPaths(paths []string) []string {
 	return out
 }
 
-func executePromptRun(logger *slog.Logger, cfg promptRunnerConfig, proj Project, policy promptPolicy, prompt string) (promptRunResult, error) {
+// executePromptRun is the dashboard prompt UI's entry point. It validates
+// inputs, builds a runnerInvocation describing the sandbox + runner argv
+// for an ad-hoc submission (envdir-wrapped if GitHub creds are enabled,
+// `--safe` unless the user opted out), and hands it to runRunner.
+func executePromptRun(logger *slog.Logger, cfg promptRunnerConfig, proj Project, policy promptPolicy, prompt string) (runResult, error) {
 	repoDir := proj.RepoDirectory(cfg.RepoRoot)
 	if repoDir == "" {
-		return promptRunResult{}, errors.New("project has no repo directory")
+		return runResult{}, errors.New("project has no repo directory")
 	}
 	if info, err := os.Stat(repoDir); err != nil || !info.IsDir() {
-		return promptRunResult{}, fmt.Errorf("repo directory %q is not available", repoDir)
+		return runResult{}, fmt.Errorf("repo directory %q is not available", repoDir)
 	}
 	if info, err := os.Stat(cfg.RunnerPath); err != nil || info.IsDir() {
-		return promptRunResult{}, fmt.Errorf("runner binary %q is not available", cfg.RunnerPath)
+		return runResult{}, fmt.Errorf("runner binary %q is not available", cfg.RunnerPath)
 	}
 	if policy.GitHubCredentials {
 		if info, err := os.Stat(cfg.EnvdirBinary); err != nil || info.IsDir() {
-			return promptRunResult{}, fmt.Errorf("envdir binary %q is not available", cfg.EnvdirBinary)
+			return runResult{}, fmt.Errorf("envdir binary %q is not available", cfg.EnvdirBinary)
 		}
 		if info, err := os.Stat(cfg.EnvDir); err != nil || !info.IsDir() {
-			return promptRunResult{}, fmt.Errorf("envdir directory %q is not available", cfg.EnvDir)
+			return runResult{}, fmt.Errorf("envdir directory %q is not available", cfg.EnvDir)
 		}
 	}
 
 	runLabel := fmt.Sprintf("%s-%s", proj.Name, policy.labelSuffix())
 	promptID := fmt.Sprintf("%s-%d", proj.Name, len(prompt))
-
-	args := []string{
-		"--quiet",
-		"--wait",
-		"--pipe",
-		"--collect",
-		"--service-type=exec",
-		"--property=WorkingDirectory=" + repoDir,
-		"--property=NoNewPrivileges=yes",
-		"--property=PrivateTmp=yes",
-		"--property=ProtectSystem=strict",
-		"--property=ProtectHome=read-only",
-		"--property=ReadWritePaths=" + strings.Join(buildPromptReadWritePaths(cfg, proj, repoDir, policy), " "),
-	}
 
 	command := []string{}
 	if policy.GitHubCredentials {
@@ -154,32 +134,16 @@ func executePromptRun(logger *slog.Logger, cfg promptRunnerConfig, proj Project,
 		command = append(command, "--safe")
 	}
 
-	args = append(args, command...)
-
-	cmd := exec.Command("systemd-run", args...)
-	cmd.Stdin = strings.NewReader(prompt)
-	var output bytes.Buffer
-	cmd.Stdout = &output
-	cmd.Stderr = &output
-
-	err := cmd.Run()
-	result := promptRunResult{
-		RunID:  extractAuditRunID(output.String()),
-		Output: output.String(),
-	}
+	res, err := runRunner(logger, runnerInvocation{
+		WorkingDirectory: repoDir,
+		ReadWritePaths:   buildPromptReadWritePaths(cfg, proj, repoDir, policy),
+		Command:          command,
+		Prompt:           prompt,
+	})
 	if err != nil {
-		logger.Error("prompt run failed", "project", proj.Name, "error", err, "output", result.Output)
-		return result, fmt.Errorf("prompt run failed: %w", err)
+		return res, fmt.Errorf("prompt run failed: %w", err)
 	}
-	return result, nil
-}
-
-func extractAuditRunID(output string) string {
-	match := auditRunRE.FindStringSubmatch(output)
-	if len(match) != 2 {
-		return ""
-	}
-	return match[1]
+	return res, nil
 }
 
 func redirectProjectMessage(w http.ResponseWriter, r *http.Request, proj *Project, message string, isError bool) {

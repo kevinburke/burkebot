@@ -1,7 +1,9 @@
 # Burkebot Dashboard
 
 Web UI for browsing Codex audit trails, managing processed-PR state, and
-submitting audited ad hoc prompts.
+submitting audited ad hoc prompts. Also hosts the [task API](burkebot-task-api.md)
+for external services to invoke server-defined codex tasks; see
+[burkebot-tasks.md](burkebot-tasks.md) for how to author a task.
 
 ## Building
 
@@ -141,6 +143,8 @@ invocation.
 | `--envdir-binary` | /opt/burkebot/bin/envdir | Path to envdir for GitHub-authenticated runs |
 | `--env-dir` | /opt/burkebot/env | Envdir directory for GitHub-authenticated runs |
 | `--bot-home` | /home/burkebot | Burkebot home dir to keep writable during prompt runs |
+| `--tasks-file` | | Path to tasks.json — enables the [task API](burkebot-task-api.md) |
+| `--tokens-file` | | Path to tokens.json (required when `--tasks-file` is set) |
 | `--version` | | Print version and exit |
 
 ## Pages

@@ -23,7 +23,8 @@ var templateFS embed.FS
 
 const maxRawFileSize = 5 * 1024 * 1024 // 5 MB
 
-// Server provides the web UI for Burkebot audit and state management.
+// Server provides the web UI for Burkebot audit and state management,
+// plus the task-API endpoints under /api/.
 type Server struct {
 	projects  []Project
 	tmpl      *template.Template
@@ -32,7 +33,9 @@ type Server struct {
 	auth      *basicAuthConfig
 	csrfKey   []byte
 	prompt    promptRunnerConfig
-	runPrompt func(*slog.Logger, promptRunnerConfig, Project, promptPolicy, string) (promptRunResult, error)
+	api       apiConfig
+	runPrompt func(*slog.Logger, promptRunnerConfig, Project, promptPolicy, string) (runResult, error)
+	runTask   func(*slog.Logger, promptRunnerConfig, Task, Token, string, string) (runResult, error)
 }
 
 func (s *Server) projectByName(name string) *Project {
@@ -62,6 +65,8 @@ func runDashboard(args []string) {
 	envdirBinary := flagSet.String("envdir-binary", "/opt/burkebot/bin/envdir", "Path to envdir for GitHub-authenticated prompt runs")
 	envDir := flagSet.String("env-dir", "/opt/burkebot/env", "Envdir directory used for GitHub-authenticated prompt runs")
 	botHome := flagSet.String("bot-home", "/home/burkebot", "Home directory for the burkebot user")
+	tasksFile := flagSet.String("tasks-file", "", "Path to tasks.json (enables the /api task endpoints)")
+	tokensFile := flagSet.String("tokens-file", "", "Path to tokens.json (required when --tasks-file is set)")
 	showVersion := flagSet.Bool("version", false, "Print version and exit")
 	flagSet.Parse(args)
 
@@ -138,6 +143,36 @@ func runDashboard(args []string) {
 		os.Exit(1)
 	}
 
+	// Task API: requires both files. Mismatched config is a startup
+	// error rather than a half-enabled API that returns 401 forever.
+	if (*tasksFile == "") != (*tokensFile == "") {
+		logger.Error("--tasks-file and --tokens-file must be set together")
+		os.Exit(1)
+	}
+	tasks, err := loadTasks(*tasksFile)
+	if err != nil {
+		logger.Error("failed to load tasks", "error", err, "path", *tasksFile)
+		os.Exit(1)
+	}
+	tokens, err := loadTokens(*tokensFile)
+	if err != nil {
+		logger.Error("failed to load tokens", "error", err, "path", *tokensFile)
+		os.Exit(1)
+	}
+	for _, t := range tasks {
+		logger.Info("loaded task", "name", t.Name, "project", t.Project, "inputs", len(t.Inputs))
+	}
+	logger.Info("loaded tokens", "count", len(tokens))
+
+	prompt := promptRunnerConfig{
+		Enabled:      *enablePromptUI,
+		RepoRoot:     *repoRoot,
+		RunnerPath:   *promptRunner,
+		EnvdirBinary: *envdirBinary,
+		EnvDir:       *envDir,
+		BotHome:      *botHome,
+	}
+
 	s := &Server{
 		projects: projects,
 		tmpl:     tmpl,
@@ -145,13 +180,12 @@ func runDashboard(args []string) {
 		logger:   logger,
 		auth:     auth,
 		csrfKey:  csrfKey,
-		prompt: promptRunnerConfig{
-			Enabled:      *enablePromptUI,
-			RepoRoot:     *repoRoot,
-			RunnerPath:   *promptRunner,
-			EnvdirBinary: *envdirBinary,
-			EnvDir:       *envDir,
-			BotHome:      *botHome,
+		prompt:   prompt,
+		api: apiConfig{
+			Tasks:    tasks,
+			Tokens:   tokens,
+			Prompt:   prompt,
+			Projects: projects,
 		},
 	}
 
@@ -247,6 +281,14 @@ func (s *Server) registerRoutes() *http.ServeMux {
 // on the URL path. We parse the path manually instead of relying on Go 1.22+
 // enhanced routing patterns, which are not working reliably with Go tip.
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
+	// /api/ uses bearer-token auth, not the dashboard's basic auth.
+	// Route it before s.authenticate so an API caller doesn't see a
+	// basic-auth challenge they can't satisfy.
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		s.handleAPI(w, r)
+		return
+	}
+
 	if !s.authenticate(w, r) {
 		return
 	}

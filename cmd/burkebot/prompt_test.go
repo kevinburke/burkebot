@@ -55,13 +55,13 @@ func TestHandlePromptRunsAndRedirectsToAudit(t *testing.T) {
 
 	var gotPolicy promptPolicy
 	var gotPrompt string
-	s.runPrompt = func(_ *slog.Logger, _ promptRunnerConfig, proj Project, policy promptPolicy, prompt string) (promptRunResult, error) {
+	s.runPrompt = func(_ *slog.Logger, _ promptRunnerConfig, proj Project, policy promptPolicy, prompt string) (runResult, error) {
 		if proj.Name != "r" {
 			t.Fatalf("unexpected project %q", proj.Name)
 		}
 		gotPolicy = policy
 		gotPrompt = prompt
-		return promptRunResult{RunID: "20260323T120000Z-adhoc-r-web-repo-write-github-safe"}, nil
+		return runResult{RunID: "20260323T120000Z-adhoc-r-web-repo-write-github-safe"}, nil
 	}
 
 	secret := "csrf-cookie"
