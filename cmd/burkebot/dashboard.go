@@ -490,6 +490,9 @@ func (s *Server) handleAuditDetail(w http.ResponseWriter, r *http.Request, proj 
 	}
 
 	dir := filepath.Join(proj.AuditDir, runID)
+	// Read the runner's output. burkebot-codex-run owns audit files as
+	// root with group-readable modes; whether the dashboard can read them
+	// depends on the deployed audit directory group.
 	data.Prompt = readFileString(filepath.Join(dir, "prompt.txt"))
 	data.LastMessage = readFileString(filepath.Join(dir, "last-message.txt"))
 	data.Stderr = readFileString(filepath.Join(dir, "codex-stderr.log"))

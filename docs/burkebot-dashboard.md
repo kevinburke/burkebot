@@ -167,8 +167,9 @@ invocation.
 - **Run Prompt** executes `burkebot-codex-run` against that project's checkout
   and redirects to the resulting audit bundle.
 
-The dashboard must run as root (or a user that can read the audit directory and
-call `systemctl start`).
+The dashboard must run as root, or as a user that can traverse and read the
+audit directory through the runner's group-readable audit bundle permissions.
+Rerun actions also require permission to call `systemctl start`.
 
 ## Tests
 
