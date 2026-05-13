@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -297,7 +298,9 @@ func executeTaskRun(logger *slog.Logger, cfg promptRunnerConfig, task Task, tok 
 // makeScratchDir creates a per-run scratch directory under botHome.
 // The dashboard server typically runs as root and the runner runs as
 // the burkebot user; world-readable files in this directory are visible
-// to both.
+// to both. The directory is also `git init`-ed so codex (which refuses
+// to run outside a "trusted" git repo without --skip-git-repo-check)
+// will accept it as its --cd target.
 func makeScratchDir(botHome, taskName string) (string, error) {
 	if botHome == "" {
 		return "", errors.New("BotHome not configured")
@@ -313,6 +316,13 @@ func makeScratchDir(botHome, taskName string) (string, error) {
 	dir := filepath.Join(root, fmt.Sprintf("%s-%s-%s", time.Now().UTC().Format("20060102T150405Z"), taskName, id))
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		return "", err
+	}
+	// `git init` (quietly) so the scratch dir reads as a real repo to
+	// codex; there are no commits, no remotes, no actual git workflow
+	// — this is purely to satisfy codex's "trusted directory" check.
+	cmd := exec.Command("git", "init", "--quiet", dir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("git init %q: %w (%s)", dir, err, strings.TrimSpace(string(out)))
 	}
 	return dir, nil
 }
