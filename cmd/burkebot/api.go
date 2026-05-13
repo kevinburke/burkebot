@@ -158,7 +158,7 @@ func (s *Server) handleTaskRun(w http.ResponseWriter, r *http.Request, taskName 
 		}
 	}
 
-	jobDir, repoDir, err := makeJobDir(s.api.Prompt.BotHome, s.api.Prompt.BotUser, s.api.Prompt.BotGroup, task.Name)
+	jobDir, repoDir, err := makeJobDir(s.api.Prompt.JobsDir, s.api.Prompt.BotUser, s.api.Prompt.BotGroup, task.Name)
 	if err != nil {
 		rest.ServerError(w, r, fmt.Errorf("job dir for %q: %w", task.Name, err))
 		return
@@ -318,7 +318,7 @@ func executeTaskRun(logger *slog.Logger, req taskRunRequest) (runResult, error) 
 
 	res, err := runRunner(logger, runnerInvocation{
 		WorkingDirectory: req.JobDir,
-		ReadWritePaths:   uniqueNonEmptyPaths([]string{req.Cfg.BotHome, req.JobDir, req.Project.AuditDir, req.Cfg.CodexAuthDir}),
+		ReadWritePaths:   uniqueNonEmptyPaths([]string{req.JobDir, req.Project.AuditDir, req.Cfg.CodexAuthDir}),
 		Command: []string{
 			req.Cfg.RunnerPath,
 			"--source", "api",
@@ -338,10 +338,10 @@ func executeTaskRun(logger *slog.Logger, req taskRunRequest) (runResult, error) 
 	return res, nil
 }
 
-// makeJobDir creates a per-run job directory under botHome with the
+// makeJobDir creates a per-run job directory under jobsDir with the
 // layout the runner script expects when invoked with --job-dir:
 //
-//	<botHome>/api-runs/<run-id>/
+//	<jobsDir>/<run-id>/
 //	  home/   — HOME for the agent process (writable)
 //	  tmp/    — TMPDIR
 //	  cache/  — Go module/build caches (mostly unused for the
@@ -350,6 +350,12 @@ func executeTaskRun(logger *slog.Logger, req taskRunRequest) (runResult, error) 
 //	  repo/   — the agent's --cd target. Input files are written
 //	            here; git-init'd so codex's trusted-directory
 //	            check passes.
+//
+// jobsDir must NOT be a subdirectory of /home or /srv/burkebot —
+// both are denyRead'd inside the srt sandbox the runner wraps codex
+// in, and that blanket deny wins over the per-job allowWrite
+// entries. The canonical layout points jobsDir at /srv/burkebot-jobs
+// (sibling of /srv/burkebot), which matches burkebot-run's pattern.
 //
 // The "repo" name matches burkebot-run's per-job convention; for the
 // task API it's a misnomer (no remote, no commits, no actual git
@@ -365,19 +371,18 @@ func executeTaskRun(logger *slog.Logger, req taskRunRequest) (runResult, error) 
 // The dashboard runs as root; everything is chowned to the burkebot
 // user since the runner runs the agent as burkebot via runuser and
 // needs to read/write these dirs.
-func makeJobDir(botHome, botUser, botGroup, taskName string) (jobDir, repoDir string, err error) {
-	if botHome == "" {
-		return "", "", errors.New("BotHome not configured")
+func makeJobDir(jobsDir, botUser, botGroup, taskName string) (jobDir, repoDir string, err error) {
+	if jobsDir == "" {
+		return "", "", errors.New("JobsDir not configured (pass --jobs-dir to the dashboard)")
 	}
-	root := filepath.Join(botHome, "api-runs")
-	if err := os.MkdirAll(root, 0o755); err != nil {
+	if err := os.MkdirAll(jobsDir, 0o755); err != nil {
 		return "", "", err
 	}
 	id, err := randomToken(8)
 	if err != nil {
 		return "", "", err
 	}
-	jobDir = filepath.Join(root, fmt.Sprintf("%s-%s-%s", time.Now().UTC().Format("20060102T150405Z"), taskName, id))
+	jobDir = filepath.Join(jobsDir, fmt.Sprintf("%s-%s-%s", time.Now().UTC().Format("20060102T150405Z"), taskName, id))
 	repoDir = filepath.Join(jobDir, "repo")
 	for _, d := range []string{jobDir, filepath.Join(jobDir, "home"), filepath.Join(jobDir, "tmp"), filepath.Join(jobDir, "cache"), repoDir} {
 		if err := os.Mkdir(d, 0o700); err != nil {

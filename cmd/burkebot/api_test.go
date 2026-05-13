@@ -71,6 +71,7 @@ func fakeTaskAPIServer(t *testing.T, schemaJSON, modelOutput string) (*Server, s
 	prompt := promptRunnerConfig{
 		RunnerPath: "/bin/true", // nonempty so apiConfig.enabled() is true
 		BotHome:    botHome,
+		JobsDir:    filepath.Join(dir, "jobs"),
 	}
 
 	s := &Server{

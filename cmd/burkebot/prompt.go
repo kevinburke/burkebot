@@ -25,6 +25,15 @@ type promptRunnerConfig struct {
 	BotUser  string
 	BotGroup string
 
+	// JobsDir is the parent directory for per-task-API job
+	// directories. Must NOT be under /home or /srv/burkebot — both
+	// are denyRead'd inside the srt sandbox the runner wraps codex
+	// in, and that deny wins over the per-job allowWrite entries.
+	// The canonical layout puts this at /srv/burkebot-jobs (sibling
+	// of /srv/burkebot), which is the same place burkebot-run uses
+	// for its dependabot-PR jobs.
+	JobsDir string
+
 	// CodexAuthDir holds the persistent codex device-auth token
 	// (auth.json). The runner script seeds each per-job CODEX_HOME
 	// from here and copies the refreshed auth.json back after the
