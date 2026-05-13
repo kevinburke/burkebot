@@ -39,15 +39,20 @@ type runnerInvocation struct {
 }
 
 // runResult is the parsed output of one runner invocation. Output is
-// the runner's combined stdout+stderr (kept for diagnostics); RunID is
-// the audit-bundle run ID extracted from the runner's "Audit run: …"
-// line.
+// the runner's combined stdout+stderr (kept for diagnostics); RunID and
+// AuditDir are extracted from the runner's "Audit run: …" / "Audit
+// dir: …" lines so callers can log them as their own structured fields
+// rather than mining them out of an escaped Output string.
 type runResult struct {
-	RunID  string
-	Output string
+	RunID    string
+	AuditDir string
+	Output   string
 }
 
-var auditRunRE = regexp.MustCompile(`(?m)^Audit run: (\S+)$`)
+var (
+	auditRunRE = regexp.MustCompile(`(?m)^Audit run: (\S+)$`)
+	auditDirRE = regexp.MustCompile(`(?m)^Audit dir: (\S+)$`)
+)
 
 // runRunner shells out to systemd-run with a hardened sandbox and the
 // caller-supplied unit Command, then parses the audit run ID out of
@@ -92,21 +97,28 @@ func runRunner(logger *slog.Logger, inv runnerInvocation) (runResult, error) {
 
 	err := cmd.Run()
 	result := runResult{
-		RunID:  extractAuditRunID(output.String()),
-		Output: output.String(),
+		RunID:    extractAuditField(auditRunRE, output.String()),
+		AuditDir: extractAuditField(auditDirRE, output.String()),
+		Output:   output.String(),
 	}
 	if err != nil {
-		// Log the full output here so callers don't have to remember
-		// to do it. Wrapping the error is left to the caller — they
-		// know whether this is a prompt UI submission, a task API
-		// run, or something else.
-		logger.Error("runner failed", "error", err, "output", result.Output)
+		// run_id and audit_dir get their own slog fields so they can
+		// be double-clicked / copied directly out of a terminal. The
+		// raw Output string keeps embedded \n's, which conflate the
+		// audit dir with whatever the runner printed next when
+		// selected by word boundary.
+		logger.Error("runner failed",
+			"error", err,
+			"run_id", result.RunID,
+			"audit_dir", result.AuditDir,
+			"output", result.Output,
+		)
 	}
 	return result, err
 }
 
-func extractAuditRunID(output string) string {
-	match := auditRunRE.FindStringSubmatch(output)
+func extractAuditField(re *regexp.Regexp, output string) string {
+	match := re.FindStringSubmatch(output)
 	if len(match) != 2 {
 		return ""
 	}
