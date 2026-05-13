@@ -35,7 +35,7 @@ type Server struct {
 	prompt    promptRunnerConfig
 	api       apiConfig
 	runPrompt func(*slog.Logger, promptRunnerConfig, Project, promptPolicy, string) (runResult, error)
-	runTask   func(*slog.Logger, promptRunnerConfig, Task, Token, Project, string, string) (runResult, error)
+	runTask   func(*slog.Logger, taskRunRequest) (runResult, error)
 }
 
 func (s *Server) projectByName(name string) *Project {
@@ -65,6 +65,9 @@ func runDashboard(args []string) {
 	envdirBinary := flagSet.String("envdir-binary", "/opt/burkebot/bin/envdir", "Path to envdir for GitHub-authenticated prompt runs")
 	envDir := flagSet.String("env-dir", "/opt/burkebot/env", "Envdir directory used for GitHub-authenticated prompt runs")
 	botHome := flagSet.String("bot-home", "/home/burkebot", "Home directory for the burkebot user")
+	botUser := flagSet.String("bot-user", "burkebot", "Name of the unprivileged user the runner script drops to via runuser; per-task-API job dirs are chowned to this user")
+	botGroup := flagSet.String("bot-group", "burkebot", "Group for the unprivileged user (matches --bot-user by default)")
+	codexAuthDir := flagSet.String("codex-auth-dir", "/var/lib/burkebot/codex-auth", "Directory holding the persistent codex auth.json; mounted writable into task-API runs so the runner can refresh the token")
 	tasksFile := flagSet.String("tasks-file", "", "Path to tasks.json (enables the /api task endpoints)")
 	tokensFile := flagSet.String("tokens-file", "", "Path to tokens.json (required when --tasks-file is set)")
 	showVersion := flagSet.Bool("version", false, "Print version and exit")
@@ -171,6 +174,9 @@ func runDashboard(args []string) {
 		EnvdirBinary: *envdirBinary,
 		EnvDir:       *envDir,
 		BotHome:      *botHome,
+		BotUser:      *botUser,
+		BotGroup:     *botGroup,
+		CodexAuthDir: *codexAuthDir,
 	}
 
 	s := &Server{

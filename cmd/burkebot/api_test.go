@@ -83,12 +83,12 @@ func fakeTaskAPIServer(t *testing.T, schemaJSON, modelOutput string) (*Server, s
 			Prompt:   prompt,
 			Projects: []Project{{Name: "p1", AuditDir: auditDir}},
 		},
-		runTask: func(_ *slog.Logger, _ promptRunnerConfig, _ Task, _ Token, gotProj Project, _ string, _ string) (runResult, error) {
+		runTask: func(_ *slog.Logger, req taskRunRequest) (runResult, error) {
 			// Sanity-check the wiring: handleTaskRun must pass the
 			// task's project through so executeTaskRun can mount its
 			// audit dir into the sandbox's ReadWritePaths.
-			if gotProj.AuditDir != auditDir {
-				return runResult{}, fmt.Errorf("proj.AuditDir = %q, want %q", gotProj.AuditDir, auditDir)
+			if req.Project.AuditDir != auditDir {
+				return runResult{}, fmt.Errorf("req.Project.AuditDir = %q, want %q", req.Project.AuditDir, auditDir)
 			}
 			runID := "20260504T120000Z-test"
 			runDir := filepath.Join(auditDir, runID)

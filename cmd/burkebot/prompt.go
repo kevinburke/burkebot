@@ -18,6 +18,19 @@ type promptRunnerConfig struct {
 	EnvdirBinary string
 	EnvDir       string
 	BotHome      string
+
+	// BotUser/BotGroup name the unprivileged user the runner script
+	// drops to via `runuser`. The dashboard chowns per-task-API job
+	// dirs to this identity so the runner can write inside them.
+	BotUser  string
+	BotGroup string
+
+	// CodexAuthDir holds the persistent codex device-auth token
+	// (auth.json). The runner script seeds each per-job CODEX_HOME
+	// from here and copies the refreshed auth.json back after the
+	// run. The dashboard adds it to the task-runner systemd unit's
+	// ReadWritePaths so the copy-back succeeds.
+	CodexAuthDir string
 }
 
 type promptPolicy struct {

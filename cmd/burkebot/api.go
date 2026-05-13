@@ -158,15 +158,15 @@ func (s *Server) handleTaskRun(w http.ResponseWriter, r *http.Request, taskName 
 		}
 	}
 
-	scratchDir, err := makeScratchDir(s.api.Prompt.BotHome, task.Name)
+	jobDir, repoDir, err := makeJobDir(s.api.Prompt.BotHome, s.api.Prompt.BotUser, s.api.Prompt.BotGroup, task.Name)
 	if err != nil {
-		rest.ServerError(w, r, fmt.Errorf("scratch dir for %q: %w", task.Name, err))
+		rest.ServerError(w, r, fmt.Errorf("job dir for %q: %w", task.Name, err))
 		return
 	}
 
 	inputPaths := make(map[string]string, len(task.Inputs))
 	for _, in := range task.Inputs {
-		path := filepath.Join(scratchDir, in.Filename)
+		path := filepath.Join(repoDir, in.Filename)
 		if err := os.WriteFile(path, body[in.Name], 0o644); err != nil {
 			rest.ServerError(w, r, fmt.Errorf("writing input %q for %q: %w", in.Name, task.Name, err))
 			return
@@ -184,7 +184,15 @@ func (s *Server) handleTaskRun(w http.ResponseWriter, r *http.Request, taskName 
 	if runner == nil {
 		runner = executeTaskRun
 	}
-	result, err := runner(s.logger, s.api.Prompt, *task, *tok, *proj, scratchDir, prompt)
+	result, err := runner(s.logger, taskRunRequest{
+		Cfg:     s.api.Prompt,
+		Task:    *task,
+		Token:   *tok,
+		Project: *proj,
+		JobDir:  jobDir,
+		RepoDir: repoDir,
+		Prompt:  prompt,
+	})
 	if err != nil {
 		s.logger.Error("task run", "task", task.Name, "token", tok.Name, "error", err, "run_id", result.RunID)
 		writeRestError(w, &resterror.Error{
@@ -244,87 +252,167 @@ func taskInputNames(t *Task) []string {
 	return out
 }
 
+// taskRunRequest bundles the per-call inputs handleTaskRun hands to
+// executeTaskRun (or to a test seam). Grouping them into a struct
+// keeps the function signature stable as the task-API plumbing grows
+// — the prior positional form had crept up to eight parameters.
+type taskRunRequest struct {
+	Cfg     promptRunnerConfig
+	Task    Task
+	Token   Token
+	Project Project
+
+	// JobDir / RepoDir are the layout produced by makeJobDir: JobDir
+	// is the runner script's --job-dir (contains home/, tmp/, cache/,
+	// codex/, repo/); RepoDir == JobDir/repo and is the agent's --cd
+	// target, holding the input files and a `git init`-ed .git so
+	// codex's trusted-directory check passes.
+	JobDir  string
+	RepoDir string
+
+	// Prompt is the rendered template fed to the runner on stdin.
+	Prompt string
+}
+
 // executeTaskRun is the production runner used by handleTaskRun. It
-// validates the task's filesystem prerequisites, builds a runnerInvocation
-// for an --output-schema-enforced run inside the per-run scratch dir,
-// and hands it to runRunner.
+// validates the request's filesystem prerequisites, builds a
+// runnerInvocation for an --output-schema-enforced run inside the
+// per-run job dir, and hands it to runRunner.
 //
-// proj.AuditDir (typically /var/log/burkebot/audit) is added to the
-// sandbox's ReadWritePaths because the runner script creates a per-run
-// subdirectory there and writes prompt/events/last-message/summary
-// files. This matches the prompt UI path's behavior exactly — see
-// buildPromptReadWritePaths. Codex itself can't touch other bundles:
-// it runs as the unprivileged burkebot user via runuser, and audit
-// files land as root:burkebot 0640 so the group can read but not
-// write.
+// The runner script's --job-dir branch uses req.JobDir to set up a
+// clean CODEX_HOME under JobDir/codex/, seeded from
+// req.Cfg.CodexAuthDir/auth.json so codex has valid OpenAI auth.
+// After the run, a (possibly refreshed) auth.json is copied back to
+// CodexAuthDir atomically.
+//
+// req.Project.AuditDir (typically /var/log/burkebot/audit) and
+// req.Cfg.CodexAuthDir (typically /var/lib/burkebot/codex-auth) are
+// added to ReadWritePaths because the runner script writes per-run
+// audit bundles under the former and refreshes auth.json in the
+// latter. This matches the regular burkebot-run service's setup.
 //
 // Tasks always run --safe (read-only sandbox); there is no caller-
 // supplied flag that can widen this.
-func executeTaskRun(logger *slog.Logger, cfg promptRunnerConfig, task Task, tok Token, proj Project, scratchDir, prompt string) (runResult, error) {
-	if info, err := os.Stat(cfg.RunnerPath); err != nil || info.IsDir() {
-		return runResult{}, fmt.Errorf("runner binary %q is not available", cfg.RunnerPath)
+func executeTaskRun(logger *slog.Logger, req taskRunRequest) (runResult, error) {
+	if info, err := os.Stat(req.Cfg.RunnerPath); err != nil || info.IsDir() {
+		return runResult{}, fmt.Errorf("runner binary %q is not available", req.Cfg.RunnerPath)
 	}
-	if info, err := os.Stat(scratchDir); err != nil || !info.IsDir() {
-		return runResult{}, fmt.Errorf("scratch dir %q is not available", scratchDir)
+	if info, err := os.Stat(req.JobDir); err != nil || !info.IsDir() {
+		return runResult{}, fmt.Errorf("job dir %q is not available", req.JobDir)
 	}
-	if info, err := os.Stat(proj.AuditDir); err != nil || !info.IsDir() {
-		return runResult{}, fmt.Errorf("audit dir %q is not available", proj.AuditDir)
+	if info, err := os.Stat(req.RepoDir); err != nil || !info.IsDir() {
+		return runResult{}, fmt.Errorf("repo dir %q is not available", req.RepoDir)
 	}
-	if info, err := os.Stat(task.OutputSchemaPath); err != nil || info.IsDir() {
-		return runResult{}, fmt.Errorf("schema %q is not available", task.OutputSchemaPath)
+	if info, err := os.Stat(req.Project.AuditDir); err != nil || !info.IsDir() {
+		return runResult{}, fmt.Errorf("audit dir %q is not available", req.Project.AuditDir)
+	}
+	if req.Cfg.CodexAuthDir == "" {
+		return runResult{}, errors.New("CodexAuthDir not configured (pass --codex-auth-dir to the dashboard)")
+	}
+	if info, err := os.Stat(req.Cfg.CodexAuthDir); err != nil || !info.IsDir() {
+		return runResult{}, fmt.Errorf("codex auth dir %q is not available", req.Cfg.CodexAuthDir)
+	}
+	if info, err := os.Stat(req.Task.OutputSchemaPath); err != nil || info.IsDir() {
+		return runResult{}, fmt.Errorf("schema %q is not available", req.Task.OutputSchemaPath)
 	}
 
 	res, err := runRunner(logger, runnerInvocation{
-		WorkingDirectory: scratchDir,
-		ReadWritePaths:   uniqueNonEmptyPaths([]string{cfg.BotHome, scratchDir, proj.AuditDir}),
+		WorkingDirectory: req.JobDir,
+		ReadWritePaths:   uniqueNonEmptyPaths([]string{req.Cfg.BotHome, req.JobDir, req.Project.AuditDir, req.Cfg.CodexAuthDir}),
 		Command: []string{
-			cfg.RunnerPath,
+			req.Cfg.RunnerPath,
 			"--source", "api",
-			"--label", fmt.Sprintf("%s-%s", task.Name, tok.Name),
-			"--prompt-id", fmt.Sprintf("%s-%d", task.Name, len(prompt)),
-			"--repo-dir", scratchDir,
-			"--output-schema", task.OutputSchemaPath,
+			"--label", fmt.Sprintf("%s-%s", req.Task.Name, req.Token.Name),
+			"--prompt-id", fmt.Sprintf("%s-%d", req.Task.Name, len(req.Prompt)),
+			"--repo-dir", req.RepoDir,
+			"--job-dir", req.JobDir,
+			"--output-schema", req.Task.OutputSchemaPath,
 			"--safe",
 		},
-		Prompt:         prompt,
-		TimeoutSeconds: task.TimeoutSeconds,
+		Prompt:         req.Prompt,
+		TimeoutSeconds: req.Task.TimeoutSeconds,
 	})
 	if err != nil {
-		return res, fmt.Errorf("task %q run failed: %w", task.Name, err)
+		return res, fmt.Errorf("task %q run failed: %w", req.Task.Name, err)
 	}
 	return res, nil
 }
 
-// makeScratchDir creates a per-run scratch directory under botHome.
-// The dashboard server typically runs as root and the runner runs as
-// the burkebot user; world-readable files in this directory are visible
-// to both. The directory is also `git init`-ed so codex (which refuses
-// to run outside a "trusted" git repo without --skip-git-repo-check)
-// will accept it as its --cd target.
-func makeScratchDir(botHome, taskName string) (string, error) {
+// makeJobDir creates a per-run job directory under botHome with the
+// layout the runner script expects when invoked with --job-dir:
+//
+//	<botHome>/api-runs/<run-id>/
+//	  home/   — HOME for the agent process (writable)
+//	  tmp/    — TMPDIR
+//	  cache/  — Go module/build caches (mostly unused for the
+//	            annotation task, but burkebot-codex-run sets
+//	            GOCACHE/GOMODCACHE here unconditionally)
+//	  repo/   — the agent's --cd target. Input files are written
+//	            here; git-init'd so codex's trusted-directory
+//	            check passes.
+//
+// The "repo" name matches burkebot-run's per-job convention; for the
+// task API it's a misnomer (no remote, no commits, no actual git
+// workflow) — keeping it aligned is a deliberate near-term choice,
+// since aliasing it would mean rewriting the runner script too. If
+// future tasks involve multi-repo or no-repo workflows we'll
+// reconsider.
+//
+// Returns (jobDir, repoDir, error). The runner takes jobDir via
+// --job-dir; the agent --cd's to repoDir via the runner's --repo-dir
+// flag.
+//
+// The dashboard runs as root; everything is chowned to the burkebot
+// user since the runner runs the agent as burkebot via runuser and
+// needs to read/write these dirs.
+func makeJobDir(botHome, botUser, botGroup, taskName string) (jobDir, repoDir string, err error) {
 	if botHome == "" {
-		return "", errors.New("BotHome not configured")
+		return "", "", errors.New("BotHome not configured")
 	}
 	root := filepath.Join(botHome, "api-runs")
 	if err := os.MkdirAll(root, 0o755); err != nil {
-		return "", err
+		return "", "", err
 	}
 	id, err := randomToken(8)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	dir := filepath.Join(root, fmt.Sprintf("%s-%s-%s", time.Now().UTC().Format("20060102T150405Z"), taskName, id))
-	if err := os.Mkdir(dir, 0o755); err != nil {
-		return "", err
+	jobDir = filepath.Join(root, fmt.Sprintf("%s-%s-%s", time.Now().UTC().Format("20060102T150405Z"), taskName, id))
+	repoDir = filepath.Join(jobDir, "repo")
+	for _, d := range []string{jobDir, filepath.Join(jobDir, "home"), filepath.Join(jobDir, "tmp"), filepath.Join(jobDir, "cache"), repoDir} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			return "", "", fmt.Errorf("mkdir %q: %w", d, err)
+		}
 	}
-	// `git init` (quietly) so the scratch dir reads as a real repo to
-	// codex; there are no commits, no remotes, no actual git workflow
-	// — this is purely to satisfy codex's "trusted directory" check.
-	cmd := exec.Command("git", "init", "--quiet", dir)
+	// chown -R to the burkebot user so the agent (running as burkebot
+	// via runuser inside the sandbox) can write to its HOME/TMPDIR/etc.
+	if botUser != "" {
+		if err := chownRecursive(jobDir, botUser, botGroup); err != nil {
+			return "", "", err
+		}
+	}
+	// git init the repo subdir so codex's trusted-directory check
+	// passes when it --cd's there.
+	cmd := exec.Command("git", "init", "--quiet", repoDir)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("git init %q: %w (%s)", dir, err, strings.TrimSpace(string(out)))
+		return "", "", fmt.Errorf("git init %q: %w (%s)", repoDir, err, strings.TrimSpace(string(out)))
 	}
-	return dir, nil
+	return jobDir, repoDir, nil
+}
+
+// chownRecursive chowns path and every entry under it to user:group.
+// Uses /usr/bin/chown so name→uid resolution happens once at the
+// process boundary; pure Go would need user.Lookup plus a filepath.Walk.
+func chownRecursive(path, user, group string) error {
+	owner := user
+	if group != "" {
+		owner = user + ":" + group
+	}
+	cmd := exec.Command("chown", "-R", owner, path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("chown %q to %s: %w (%s)", path, owner, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // readJSONBody decodes the request body as a JSON object whose values
