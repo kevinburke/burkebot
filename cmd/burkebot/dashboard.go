@@ -35,7 +35,7 @@ type Server struct {
 	prompt    promptRunnerConfig
 	api       apiConfig
 	runPrompt func(*slog.Logger, promptRunnerConfig, Project, promptPolicy, string) (runResult, error)
-	runTask   func(*slog.Logger, promptRunnerConfig, Task, Token, string, string) (runResult, error)
+	runTask   func(*slog.Logger, promptRunnerConfig, Task, Token, Project, string, string) (runResult, error)
 }
 
 func (s *Server) projectByName(name string) *Project {

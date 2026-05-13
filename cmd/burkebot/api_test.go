@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -82,7 +83,13 @@ func fakeTaskAPIServer(t *testing.T, schemaJSON, modelOutput string) (*Server, s
 			Prompt:   prompt,
 			Projects: []Project{{Name: "p1", AuditDir: auditDir}},
 		},
-		runTask: func(_ *slog.Logger, _ promptRunnerConfig, _ Task, _ Token, _ string, _ string) (runResult, error) {
+		runTask: func(_ *slog.Logger, _ promptRunnerConfig, _ Task, _ Token, gotProj Project, _ string, _ string) (runResult, error) {
+			// Sanity-check the wiring: handleTaskRun must pass the
+			// task's project through so executeTaskRun can mount its
+			// audit dir into the sandbox's ReadWritePaths.
+			if gotProj.AuditDir != auditDir {
+				return runResult{}, fmt.Errorf("proj.AuditDir = %q, want %q", gotProj.AuditDir, auditDir)
+			}
 			runID := "20260504T120000Z-test"
 			runDir := filepath.Join(auditDir, runID)
 			if err := os.MkdirAll(runDir, 0o755); err != nil {

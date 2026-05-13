@@ -183,7 +183,7 @@ func (s *Server) handleTaskRun(w http.ResponseWriter, r *http.Request, taskName 
 	if runner == nil {
 		runner = executeTaskRun
 	}
-	result, err := runner(s.logger, s.api.Prompt, *task, *tok, scratchDir, prompt)
+	result, err := runner(s.logger, s.api.Prompt, *task, *tok, *proj, scratchDir, prompt)
 	if err != nil {
 		s.logger.Error("task run", "task", task.Name, "token", tok.Name, "error", err, "run_id", result.RunID)
 		writeRestError(w, &resterror.Error{
@@ -248,14 +248,26 @@ func taskInputNames(t *Task) []string {
 // for an --output-schema-enforced run inside the per-run scratch dir,
 // and hands it to runRunner.
 //
+// proj.AuditDir (typically /var/log/burkebot/audit) is added to the
+// sandbox's ReadWritePaths because the runner script creates a per-run
+// subdirectory there and writes prompt/events/last-message/summary
+// files. This matches the prompt UI path's behavior exactly — see
+// buildPromptReadWritePaths. Codex itself can't touch other bundles:
+// it runs as the unprivileged burkebot user via runuser, and audit
+// files land as root:burkebot 0640 so the group can read but not
+// write.
+//
 // Tasks always run --safe (read-only sandbox); there is no caller-
 // supplied flag that can widen this.
-func executeTaskRun(logger *slog.Logger, cfg promptRunnerConfig, task Task, tok Token, scratchDir, prompt string) (runResult, error) {
+func executeTaskRun(logger *slog.Logger, cfg promptRunnerConfig, task Task, tok Token, proj Project, scratchDir, prompt string) (runResult, error) {
 	if info, err := os.Stat(cfg.RunnerPath); err != nil || info.IsDir() {
 		return runResult{}, fmt.Errorf("runner binary %q is not available", cfg.RunnerPath)
 	}
 	if info, err := os.Stat(scratchDir); err != nil || !info.IsDir() {
 		return runResult{}, fmt.Errorf("scratch dir %q is not available", scratchDir)
+	}
+	if info, err := os.Stat(proj.AuditDir); err != nil || !info.IsDir() {
+		return runResult{}, fmt.Errorf("audit dir %q is not available", proj.AuditDir)
 	}
 	if info, err := os.Stat(task.OutputSchemaPath); err != nil || info.IsDir() {
 		return runResult{}, fmt.Errorf("schema %q is not available", task.OutputSchemaPath)
@@ -263,7 +275,7 @@ func executeTaskRun(logger *slog.Logger, cfg promptRunnerConfig, task Task, tok 
 
 	res, err := runRunner(logger, runnerInvocation{
 		WorkingDirectory: scratchDir,
-		ReadWritePaths:   uniqueNonEmptyPaths([]string{cfg.BotHome, scratchDir}),
+		ReadWritePaths:   uniqueNonEmptyPaths([]string{cfg.BotHome, scratchDir, proj.AuditDir}),
 		Command: []string{
 			cfg.RunnerPath,
 			"--source", "api",
