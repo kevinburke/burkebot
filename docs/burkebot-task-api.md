@@ -16,9 +16,9 @@ The API is off unless the dashboard is started with both files:
 
 ```bash
 burkebot dashboard \
-  --projects /etc/burkebot/projects.json \
-  --tasks-file /etc/burkebot/tasks.json \
-  --tokens-file /etc/burkebot/tokens.json
+  --projects /opt/burkebot/projects.json \
+  --tasks-file /opt/burkebot/tasks.json \
+  --tokens-file /opt/burkebot/tokens.json
 ```
 
 Setting only one of `--tasks-file` / `--tokens-file` is a startup

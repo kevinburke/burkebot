@@ -20,10 +20,17 @@ else is server-defined and immutable from the caller's side.
 
 ## File layout
 
-A typical deployment puts task definitions under `/etc/burkebot/`:
+Burkebot doesn't care where these files live — every path is supplied
+to the dashboard at startup via `--tasks-file`, `--tokens-file`, and
+the per-task `prompt_template` / `output_schema` fields. The example
+below matches the [caracal-server burkebot
+role](https://github.com/kevinburke/caracal-server/tree/main/roles/burkebot)'s
+defaults; substitute any prefix that makes sense for your deployment.
+
+A typical deployment puts task definitions under `/opt/burkebot/`:
 
 ```
-/etc/burkebot/
+/opt/burkebot/
   tasks.json
   tokens.json
   tasks/
@@ -36,8 +43,8 @@ The dashboard is started with:
 
 ```bash
 burkebot dashboard \
-  --tasks-file /etc/burkebot/tasks.json \
-  --tokens-file /etc/burkebot/tokens.json \
+  --tasks-file /opt/burkebot/tasks.json \
+  --tokens-file /opt/burkebot/tokens.json \
   ...
 ```
 
@@ -52,8 +59,8 @@ fail loudly rather than waiting until first invocation.
   {
     "name": "annotate-meeting",
     "project": "public-meetings",
-    "prompt_template": "/etc/burkebot/tasks/annotate-meeting/prompt.tmpl",
-    "output_schema":   "/etc/burkebot/tasks/annotate-meeting/schema.json",
+    "prompt_template": "/opt/burkebot/tasks/annotate-meeting/prompt.tmpl",
+    "output_schema":   "/opt/burkebot/tasks/annotate-meeting/schema.json",
     "inputs": [
       {"name": "agenda",     "filename": "agenda.txt",     "max_bytes": 1048576},
       {"name": "transcript", "filename": "transcript.txt", "max_bytes": 8388608}
@@ -180,7 +187,7 @@ returns a one-paragraph summary.
 
 1. **Author the schema.**
 
-   `/etc/burkebot/tasks/summarize-pr/schema.json`:
+   `/opt/burkebot/tasks/summarize-pr/schema.json`:
 
    ```json
    {
@@ -196,7 +203,7 @@ returns a one-paragraph summary.
 
 2. **Author the prompt template.**
 
-   `/etc/burkebot/tasks/summarize-pr/prompt.tmpl`:
+   `/opt/burkebot/tasks/summarize-pr/prompt.tmpl`:
 
    ```
    Read the PR title in {{ .title }} and the diff in {{ .diff }}.
@@ -204,7 +211,7 @@ returns a one-paragraph summary.
    Output JSON conforming to the schema burkebot gave you.
    ```
 
-3. **Add the task entry** to `/etc/burkebot/tasks.json`.
+3. **Add the task entry** to `/opt/burkebot/tasks.json`.
 
 4. **Provision a token** for the caller (or extend an existing token's
    `allowed_tasks` to include `summarize-pr`).
