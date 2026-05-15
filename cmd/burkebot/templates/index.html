@@ -32,6 +32,19 @@
         }
         .card a:hover { text-decoration: underline; }
         .card-meta { font-size: 0.85em; color: #888; margin-top: 4px; }
+        .section-title {
+            margin: 24px 0 10px;
+            font-size: 0.8em;
+            color: #6b7280;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+        .task-link {
+            border-left: 4px solid #0f766e;
+            background: #f8fffd;
+        }
+        .task-link a { color: #0f766e; }
     </style>
 </head>
 <body>
@@ -39,12 +52,14 @@
     <p class="subtitle">Select a task or project</p>
 
     {{if .TasksEnabled}}
-    <div class="card">
-        <a href="/tasks">Tasks</a>
+    <h2 class="section-title">Task API</h2>
+    <div class="card task-link">
+        <a href="/tasks">Task Runs</a>
         <div class="card-meta">Configured task API runs, including recent transcript annotations</div>
     </div>
     {{end}}
 
+    <h2 class="section-title">Projects</h2>
     {{range .Projects}}
     <div class="card">
         <a href="/projects/{{.Name}}/">{{.Name}}</a>

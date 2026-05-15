@@ -226,6 +226,64 @@ func TestHandleTasks(t *testing.T) {
 	}
 }
 
+func TestHandleTasksMatchesLegacyTaskSummaries(t *testing.T) {
+	tmp := t.TempDir()
+	auditDir := filepath.Join(tmp, "audit")
+	stateFile := filepath.Join(tmp, "state.json")
+	if err := os.WriteFile(stateFile, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTestAuditSummary(t, auditDir, "20260315T120000Z-annotate-meetings-public", Summary{
+		Label:           "public",
+		PromptID:        "annotate-meetings-1234",
+		DurationSeconds: 42,
+		ExitCode:        0,
+	})
+	writeTestAuditSummary(t, auditDir, "20260315T130000Z-task-annotate-meetings-internal", Summary{
+		Source:          "task",
+		Label:           "not-the-task-name",
+		DurationSeconds: 24,
+		ExitCode:        1,
+	})
+	writeTestAuditSummary(t, auditDir, "20260315T140000Z-pr-r-pr-99", Summary{
+		Source:   "pr",
+		Label:    "annotate-meetings-public",
+		PromptID: "annotate-meetings-9999",
+		ExitCode: 0,
+	})
+
+	s := newTestServer(t, []Project{{
+		Name: "r", AuditDir: auditDir, StateFile: stateFile,
+	}})
+	s.api.Tasks = []Task{{
+		Name:             "annotate-meetings",
+		Project:          "r",
+		OutputSchemaPath: "schema.json",
+	}}
+
+	mux := s.registerRoutes()
+	req := httptest.NewRequest("GET", "/projects/r/tasks", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		"20260315T120000Z-annotate-meetings-public",
+		"20260315T130000Z-task-annotate-meetings-internal",
+		"exit 1",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected %q in body", want)
+		}
+	}
+	if strings.Contains(body, "20260315T140000Z-pr-r-pr-99") {
+		t.Fatal("PR run appeared on task page")
+	}
+}
+
 func TestHandleAllTasks(t *testing.T) {
 	tmp := t.TempDir()
 	alphaAudit := filepath.Join(tmp, "alpha", "audit")

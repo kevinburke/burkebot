@@ -496,9 +496,10 @@ type taskPageData struct {
 }
 
 type taskDashboardTask struct {
-	Task    Task
-	Project Project
-	Runs    []taskDashboardRun
+	Task        Task
+	Project     Project
+	Runs        []taskDashboardRun
+	ScannedRuns int
 }
 
 type taskDashboardRun struct {
@@ -588,15 +589,19 @@ func buildTaskDashboardTasks(project Project, tasks []Task, runs []AuditBundle) 
 	out := make([]taskDashboardTask, len(tasks))
 	taskIndexes := make(map[string]int, len(tasks))
 	for i, task := range tasks {
-		out[i] = taskDashboardTask{Task: task, Project: project}
+		out[i] = taskDashboardTask{
+			Task:        task,
+			Project:     project,
+			ScannedRuns: len(runs),
+		}
 		taskIndexes[task.Name] = i
 	}
 
 	for _, run := range runs {
-		if run.Summary == nil || run.Summary.Source != "api" {
+		if run.Summary == nil {
 			continue
 		}
-		taskName, tokenName := taskRunLabel(run.Summary.Label, tasks)
+		taskName, tokenName := taskRunSummaryLabel(run, tasks)
 		if taskName == "" {
 			continue
 		}
@@ -615,12 +620,40 @@ func buildTaskDashboardTasks(project Project, tasks []Task, runs []AuditBundle) 
 	return out
 }
 
+func taskRunSummaryLabel(run AuditBundle, tasks []Task) (taskName, tokenName string) {
+	if run.Summary == nil {
+		return "", ""
+	}
+	switch run.Summary.Source {
+	case "", "api", "task":
+	default:
+		return "", ""
+	}
+	for _, candidate := range []string{run.Summary.Label, run.Summary.PromptID, run.RunID} {
+		taskName, tokenName = taskRunLabel(candidate, tasks)
+		if taskName != "" {
+			return taskName, tokenName
+		}
+	}
+	return "", ""
+}
+
 func taskRunLabel(label string, tasks []Task) (taskName, tokenName string) {
 	var match string
+	var suffix string
 	for _, task := range tasks {
 		if label == task.Name || strings.HasPrefix(label, task.Name+"-") {
 			if len(task.Name) > len(match) {
 				match = task.Name
+				suffix = strings.TrimPrefix(label, task.Name+"-")
+			}
+			continue
+		}
+		needle := "-" + task.Name + "-"
+		if _, after, ok := strings.Cut(label, needle); ok {
+			if len(task.Name) > len(match) {
+				match = task.Name
+				suffix = after
 			}
 		}
 	}
@@ -630,7 +663,7 @@ func taskRunLabel(label string, tasks []Task) (taskName, tokenName string) {
 	if label == match {
 		return match, ""
 	}
-	return match, strings.TrimPrefix(label, match+"-")
+	return match, suffix
 }
 
 type auditDetailData struct {
