@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Project.Name}} Tasks - Burkebot</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            line-height: 1.5;
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+            color: #333;
+        }
+        h1 { margin-bottom: 5px; }
+        .subtitle { color: #666; margin-bottom: 20px; }
+        h2 { margin-top: 0; margin-bottom: 10px; font-size: 1.05em; color: #333; }
+        h3 { margin: 18px 0 8px; font-size: 0.95em; color: #555; }
+        .nav-links { margin-bottom: 20px; }
+        .nav-links a, .nav-links span.current {
+            display: inline-block;
+            padding: 8px 16px;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            font-size: 0.9em;
+            font-weight: 500;
+            margin-right: 10px;
+        }
+        .nav-links a { background: #3b82f6; }
+        .nav-links a:hover { background: #2563eb; }
+        .nav-links span.current { background: #9ca3af; cursor: default; }
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 14px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 8px;
+        }
+        .card-title {
+            font-family: "SF Mono", Monaco, Consolas, monospace;
+            font-weight: 600;
+            font-size: 1.05em;
+        }
+        .card-meta { font-size: 0.85em; color: #888; }
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.75em;
+            font-weight: 500;
+            white-space: nowrap;
+        }
+        .badge-success { background: #dcfce7; color: #15803d; }
+        .badge-failure { background: #fee2e2; color: #b91c1c; }
+        .badge-source { background: #dbeafe; color: #1d4ed8; }
+        .input-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin: 8px 0 0;
+            padding: 0;
+            list-style: none;
+        }
+        .input-list li {
+            padding: 2px 8px;
+            border-radius: 12px;
+            background: #f1f5f9;
+            color: #475569;
+            font-family: "SF Mono", Monaco, Consolas, monospace;
+            font-size: 0.8em;
+        }
+        .run-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85em;
+        }
+        .run-table th, .run-table td {
+            text-align: left;
+            padding: 7px 10px;
+            border-bottom: 1px solid #e5e7eb;
+            vertical-align: top;
+        }
+        .run-table th { color: #666; font-size: 0.9em; }
+        .run-table td.run-id {
+            font-family: "SF Mono", Monaco, Consolas, monospace;
+            word-break: break-word;
+        }
+        .run-table a { color: #3b82f6; text-decoration: none; font-weight: 600; }
+        .run-table a:hover { text-decoration: underline; }
+        .empty { color: #888; font-style: italic; padding: 8px 0; }
+        @media (max-width: 700px) {
+            .card-header { display: block; }
+            .run-table, .run-table thead, .run-table tbody, .run-table tr, .run-table th, .run-table td {
+                display: block;
+            }
+            .run-table thead { display: none; }
+            .run-table td {
+                padding: 6px 0;
+                border-bottom: none;
+            }
+            .run-table tr {
+                padding: 8px 0;
+                border-bottom: 1px solid #e5e7eb;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>{{.Project.Name}} Tasks</h1>
+    <p class="subtitle">{{if .Project.Repo}}{{.Project.Repo}} &mdash; {{end}}Configured API tasks and recent runs</p>
+
+    <div class="nav-links">
+        {{if gt (len .Projects) 1}}<a href="/">Projects</a>{{end}}
+        <a href="/projects/{{.Project.Name}}/">Audit Runs</a>
+        <a href="/projects/{{.Project.Name}}/state">PR State</a>
+        <span class="current">Tasks</span>
+    </div>
+
+    {{if .Tasks}}
+        {{range .Tasks}}
+        <div class="card">
+            <div class="card-header">
+                <div>
+                    <h2 class="card-title">{{.Task.Name}}</h2>
+                    <div class="card-meta">
+                        schema {{.Task.OutputSchemaPath}}{{if ne .Task.TimeoutSeconds 0}} &middot; timeout {{.Task.TimeoutSeconds}}s{{end}}
+                    </div>
+                </div>
+                <span class="badge badge-source">{{len .Runs}} runs</span>
+            </div>
+
+            {{if .Task.Inputs}}
+            <ul class="input-list">
+                {{range .Task.Inputs}}<li>{{.Name}}</li>{{end}}
+            </ul>
+            {{end}}
+
+            <h3>Recent Runs</h3>
+            {{if .Runs}}
+            <table class="run-table">
+                <thead><tr><th>Run</th><th>Started</th><th>Token</th><th>Status</th><th>Duration</th></tr></thead>
+                <tbody>
+                {{range .Runs}}
+                    <tr>
+                        <td class="run-id"><a href="/projects/{{$.Project.Name}}/audit/{{.Bundle.RunID}}/">{{.Bundle.RunID}}</a></td>
+                        <td>{{runTime .Bundle.RunID}}</td>
+                        <td>{{if .TokenName}}{{.TokenName}}{{else}}unknown{{end}}</td>
+                        <td>
+                            {{if .Bundle.Summary}}
+                                {{if eq (exitCodeClass .Bundle.Summary.ExitCode) "success"}}
+                                    <span class="badge badge-success">exit 0</span>
+                                {{else}}
+                                    <span class="badge badge-failure">exit {{.Bundle.Summary.ExitCode}}</span>
+                                {{end}}
+                            {{else}}
+                                <span class="card-meta">summary unavailable</span>
+                            {{end}}
+                        </td>
+                        <td>{{if and .Bundle.Summary (ne .Bundle.Summary.DurationSeconds 0)}}{{formatDuration .Bundle.Summary.DurationSeconds}}{{end}}</td>
+                    </tr>
+                {{end}}
+                </tbody>
+            </table>
+            {{else}}
+            <p class="empty">No API runs found</p>
+            {{end}}
+        </div>
+        {{end}}
+    {{else}}
+        <p class="empty">No API tasks configured for this project</p>
+    {{end}}
+
+    {{template "footer" .}}
+</body>
+</html>

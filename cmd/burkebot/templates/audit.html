@@ -130,6 +130,7 @@
         {{if gt (len .Projects) 1}}<a href="/">Projects</a>{{end}}
         <a href="/projects/{{.Project.Name}}/">Audit Runs</a>
         <a href="/projects/{{.Project.Name}}/state">PR State</a>
+        {{if .TasksEnabled}}<a href="/projects/{{.Project.Name}}/tasks">Tasks</a>{{end}}
     </div>
 
     <div class="header-row">

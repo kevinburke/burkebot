@@ -22,6 +22,8 @@ import (
 var templateFS embed.FS
 
 const maxRawFileSize = 5 * 1024 * 1024 // 5 MB
+const maxTaskDashboardAuditRuns = 500
+const maxTaskDashboardRunsPerTask = 25
 
 // Server provides the web UI for Burkebot audit and state management,
 // plus the task-API endpoints under /api/.
@@ -347,6 +349,14 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		}
 		s.handleState(w, r, proj)
 
+	// GET /projects/<project>/tasks
+	case len(rest) == 1 && rest[0] == "tasks":
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleTasks(w, r, proj)
+
 	// POST /projects/<project>/prompt
 	case len(rest) == 1 && rest[0] == "prompt":
 		if r.Method != http.MethodPost {
@@ -431,6 +441,7 @@ type projectData struct {
 	IsError         bool
 	PromptEnabled   bool
 	PromptCSRFToken string
+	TasksEnabled    bool
 }
 
 func (s *Server) handleProject(w http.ResponseWriter, r *http.Request, proj *Project) {
@@ -460,7 +471,113 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request, proj *Pro
 		IsError:         r.URL.Query().Get("error") == "1",
 		PromptEnabled:   s.prompt.Enabled,
 		PromptCSRFToken: s.csrfToken(w, r, "/projects/"+proj.Name+"/prompt"),
+		TasksEnabled:    s.hasTasksForProject(proj.Name),
 	})
+}
+
+type taskPageData struct {
+	pageContext
+	Project  Project
+	Projects []Project
+	Tasks    []taskDashboardTask
+}
+
+type taskDashboardTask struct {
+	Task Task
+	Runs []taskDashboardRun
+}
+
+type taskDashboardRun struct {
+	Bundle    AuditBundle
+	TokenName string
+}
+
+func (s *Server) hasTasksForProject(projectName string) bool {
+	for _, task := range s.api.Tasks {
+		if task.Project == projectName {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request, proj *Project) {
+	runs, err := loadAuditRuns(proj.AuditDir, proj.Name)
+	if err != nil {
+		s.logger.Error("failed to load audit runs", "error", err, "project", proj.Name)
+		http.Error(w, "Failed to load audit runs", http.StatusInternalServerError)
+		return
+	}
+	if len(runs) > maxTaskDashboardAuditRuns {
+		runs = runs[:maxTaskDashboardAuditRuns]
+	}
+
+	tasks := tasksForProject(s.api.Tasks, proj.Name)
+	s.render(w, "tasks.html", taskPageData{
+		pageContext: newPageContext(),
+		Project:     *proj,
+		Projects:    s.projects,
+		Tasks:       buildTaskDashboardTasks(tasks, runs),
+	})
+}
+
+func tasksForProject(tasks []Task, projectName string) []Task {
+	out := make([]Task, 0, len(tasks))
+	for _, task := range tasks {
+		if task.Project == projectName {
+			out = append(out, task)
+		}
+	}
+	return out
+}
+
+func buildTaskDashboardTasks(tasks []Task, runs []AuditBundle) []taskDashboardTask {
+	out := make([]taskDashboardTask, len(tasks))
+	taskIndexes := make(map[string]int, len(tasks))
+	for i, task := range tasks {
+		out[i] = taskDashboardTask{Task: task}
+		taskIndexes[task.Name] = i
+	}
+
+	for _, run := range runs {
+		if run.Summary == nil || run.Summary.Source != "api" {
+			continue
+		}
+		taskName, tokenName := taskRunLabel(run.Summary.Label, tasks)
+		if taskName == "" {
+			continue
+		}
+		idx, ok := taskIndexes[taskName]
+		if !ok {
+			continue
+		}
+		if len(out[idx].Runs) >= maxTaskDashboardRunsPerTask {
+			continue
+		}
+		out[idx].Runs = append(out[idx].Runs, taskDashboardRun{
+			Bundle:    run,
+			TokenName: tokenName,
+		})
+	}
+	return out
+}
+
+func taskRunLabel(label string, tasks []Task) (taskName, tokenName string) {
+	var match string
+	for _, task := range tasks {
+		if label == task.Name || strings.HasPrefix(label, task.Name+"-") {
+			if len(task.Name) > len(match) {
+				match = task.Name
+			}
+		}
+	}
+	if match == "" {
+		return "", ""
+	}
+	if label == match {
+		return match, ""
+	}
+	return match, strings.TrimPrefix(label, match+"-")
 }
 
 type auditDetailData struct {
@@ -475,6 +592,7 @@ type auditDetailData struct {
 	AgentMessage   string
 	Stderr         string
 	RerunCSRFToken string
+	TasksEnabled   bool
 }
 
 func (s *Server) handleAuditDetail(w http.ResponseWriter, r *http.Request, proj *Project, runID string) {
@@ -495,6 +613,7 @@ func (s *Server) handleAuditDetail(w http.ResponseWriter, r *http.Request, proj 
 		Projects:       s.projects,
 		Bundle:         *bundle,
 		RerunCSRFToken: s.csrfToken(w, r, "/projects/"+proj.Name+"/state/rerun"),
+		TasksEnabled:   s.hasTasksForProject(proj.Name),
 	}
 
 	dir := filepath.Join(proj.AuditDir, runID)
@@ -570,6 +689,7 @@ type stateData struct {
 	IsError           bool
 	RerunCSRFToken    string
 	RerunAllCSRFToken string
+	TasksEnabled      bool
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request, proj *Project) {
@@ -589,6 +709,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request, proj *Proje
 		IsError:           r.URL.Query().Get("error") == "1",
 		RerunCSRFToken:    s.csrfToken(w, r, "/projects/"+proj.Name+"/state/rerun"),
 		RerunAllCSRFToken: s.csrfToken(w, r, "/projects/"+proj.Name+"/state/rerun-all"),
+		TasksEnabled:      s.hasTasksForProject(proj.Name),
 	})
 }
 

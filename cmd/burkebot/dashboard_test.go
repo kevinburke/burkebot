@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -51,6 +52,27 @@ func writeTestAudit(t *testing.T, auditDir, runID string) {
 	os.WriteFile(filepath.Join(dir, "last-message.txt"), []byte("test message"), 0o644)
 	os.WriteFile(filepath.Join(dir, "codex-stderr.log"), []byte("test stderr"), 0o644)
 	os.WriteFile(filepath.Join(dir, "commands.jsonl"), []byte(`{"timestamp":"t","name":"shell","call_id":"c1","arguments":{"cmd":"go test"}}`+"\n"), 0o644)
+}
+
+func writeTestAuditSummary(t *testing.T, auditDir, runID string, summary Summary) {
+	t.Helper()
+	dir := filepath.Join(auditDir, runID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if summary.RunID == "" {
+		summary.RunID = runID
+	}
+	data, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "summary.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "last-message.txt"), []byte("task output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestHandleIndexSingleProjectRedirects(t *testing.T) {
@@ -127,6 +149,55 @@ func TestHandleProject(t *testing.T) {
 	}
 	if !strings.Contains(body, "#42") {
 		t.Fatalf("expected PR state in body")
+	}
+}
+
+func TestHandleTasks(t *testing.T) {
+	tmp := t.TempDir()
+	auditDir := filepath.Join(tmp, "audit")
+	stateFile := filepath.Join(tmp, "state.json")
+	if err := os.WriteFile(stateFile, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTestAuditSummary(t, auditDir, "20260315T120000Z-api-r-annotate-public", Summary{
+		Source:          "api",
+		Label:           "annotate-public",
+		DurationSeconds: 42,
+		ExitCode:        0,
+	})
+	writeTestAuditSummary(t, auditDir, "20260315T130000Z-pr-r-pr-99", Summary{
+		Source:          "pr",
+		Label:           "annotate-public",
+		DurationSeconds: 12,
+		ExitCode:        0,
+	})
+
+	s := newTestServer(t, []Project{{
+		Name: "r", AuditDir: auditDir, StateFile: stateFile,
+	}})
+	s.api.Tasks = []Task{{
+		Name:             "annotate",
+		Project:          "r",
+		OutputSchemaPath: "schema.json",
+		Inputs:           []TaskInput{{Name: "agenda", Filename: "agenda.txt"}},
+	}}
+
+	mux := s.registerRoutes()
+	req := httptest.NewRequest("GET", "/projects/r/tasks", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{"annotate", "agenda", "20260315T120000Z-api-r-annotate-public", "public", "exit 0"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected %q in body", want)
+		}
+	}
+	if strings.Contains(body, "20260315T130000Z-pr-r-pr-99") {
+		t.Fatal("non-API run appeared on task page")
 	}
 }
 
@@ -393,6 +464,56 @@ func TestLoadAuditRunsMissingDir(t *testing.T) {
 	}
 	if len(runs) != 0 {
 		t.Fatalf("expected 0 runs, got %d", len(runs))
+	}
+}
+
+func TestBuildTaskDashboardTasksPrefersLongestTaskName(t *testing.T) {
+	tasks := []Task{
+		{Name: "annotate", Project: "r"},
+		{Name: "annotate-meeting", Project: "r"},
+	}
+	runs := []AuditBundle{{
+		RunID: "20260315T120000Z-api-r-annotate-meeting-alice",
+		Summary: &Summary{
+			Source: "api",
+			Label:  "annotate-meeting-alice",
+		},
+	}}
+
+	got := buildTaskDashboardTasks(tasks, runs)
+	if len(got[0].Runs) != 0 {
+		t.Fatalf("shorter task matched run: %#v", got[0].Runs)
+	}
+	if len(got[1].Runs) != 1 {
+		t.Fatalf("expected one run for annotate-meeting, got %d", len(got[1].Runs))
+	}
+	if got[1].Runs[0].TokenName != "alice" {
+		t.Fatalf("expected token alice, got %q", got[1].Runs[0].TokenName)
+	}
+}
+
+func TestBuildTaskDashboardTasksCapsRunsPerTask(t *testing.T) {
+	tasks := []Task{{Name: "annotate", Project: "r"}}
+	runs := make([]AuditBundle, maxTaskDashboardRunsPerTask+10)
+	for i := range runs {
+		runs[i] = AuditBundle{
+			RunID: fmt.Sprintf("20260315T1200%02dZ-api-r-annotate-alice", i),
+			Summary: &Summary{
+				Source: "api",
+				Label:  "annotate-alice",
+			},
+		}
+	}
+
+	got := buildTaskDashboardTasks(tasks, runs)
+	if len(got) != 1 {
+		t.Fatalf("expected one task, got %d", len(got))
+	}
+	if len(got[0].Runs) != maxTaskDashboardRunsPerTask {
+		t.Fatalf("expected %d runs, got %d", maxTaskDashboardRunsPerTask, len(got[0].Runs))
+	}
+	if got[0].Runs[0].Bundle.RunID != runs[0].RunID {
+		t.Fatalf("expected cap to preserve run order, got first run %q", got[0].Runs[0].Bundle.RunID)
 	}
 }
 

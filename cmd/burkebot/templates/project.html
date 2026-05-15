@@ -137,6 +137,7 @@
         {{if gt (len .Projects) 1}}<a href="/">Projects</a>{{end}}
         <span class="current">Audit Runs</span>
         <a href="/projects/{{.Project.Name}}/state">PR State</a>
+        {{if .TasksEnabled}}<a href="/projects/{{.Project.Name}}/tasks">Tasks</a>{{end}}
     </div>
 
     {{if .Message}}

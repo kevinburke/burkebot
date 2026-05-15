@@ -151,6 +151,8 @@ invocation.
 
 - **`/`** — project list (multi-project) or redirect to single project
 - **`/projects/{project}/`** — audit run list + processed-PR summary
+- **`/projects/{project}/tasks`** — configured task API tasks for the project,
+  grouped with recent API runs and links to their audit details
 - **`/projects/{project}/audit/{run_id}/`** — audit detail: summary, prompt, last
   message, commands, stderr, file list
 - **`/projects/{project}/audit/{run_id}/{file}`** — raw file content (text/plain,
