@@ -150,6 +150,8 @@ invocation.
 ## Pages
 
 - **`/`** — project list (multi-project) or redirect to single project
+- **`/tasks`** — configured task API tasks across all projects, grouped with
+  recent API runs and links to their audit details
 - **`/projects/{project}/`** — audit run list + processed-PR summary
 - **`/projects/{project}/tasks`** — configured task API tasks for the project,
   grouped with recent API runs and links to their audit details

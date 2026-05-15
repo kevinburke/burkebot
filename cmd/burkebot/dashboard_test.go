@@ -124,6 +124,31 @@ func TestHandleIndexMultiProjectShowsList(t *testing.T) {
 	}
 }
 
+func TestHandleIndexShowsTasksLink(t *testing.T) {
+	tmp := t.TempDir()
+	os.MkdirAll(filepath.Join(tmp, "a", "audit"), 0o755)
+	os.MkdirAll(filepath.Join(tmp, "b", "audit"), 0o755)
+
+	s := newTestServer(t, []Project{
+		{Name: "alpha", AuditDir: filepath.Join(tmp, "a", "audit"), StateFile: filepath.Join(tmp, "a", "state.json")},
+		{Name: "beta", AuditDir: filepath.Join(tmp, "b", "audit"), StateFile: filepath.Join(tmp, "b", "state.json")},
+	})
+	s.api.Tasks = []Task{{Name: "annotate", Project: "alpha"}}
+
+	mux := s.registerRoutes()
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `href="/tasks"`) {
+		t.Fatalf("expected tasks link in body, got %s", body)
+	}
+}
+
 func TestHandleProject(t *testing.T) {
 	tmp := t.TempDir()
 	auditDir := filepath.Join(tmp, "audit")
@@ -159,7 +184,7 @@ func TestHandleTasks(t *testing.T) {
 	if err := os.WriteFile(stateFile, []byte(`{}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	writeTestAuditSummary(t, auditDir, "20260315T120000Z-api-r-annotate-public", Summary{
+	writeTestAuditSummary(t, auditDir, "20260315T120000Z-api-annotate-public", Summary{
 		Source:          "api",
 		Label:           "annotate-public",
 		DurationSeconds: 42,
@@ -191,13 +216,69 @@ func TestHandleTasks(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 	body := w.Body.String()
-	for _, want := range []string{"annotate", "agenda", "20260315T120000Z-api-r-annotate-public", "public", "exit 0"} {
+	for _, want := range []string{"annotate", "agenda", "20260315T120000Z-api-annotate-public", "public", "exit 0"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("expected %q in body", want)
 		}
 	}
 	if strings.Contains(body, "20260315T130000Z-pr-r-pr-99") {
 		t.Fatal("non-API run appeared on task page")
+	}
+}
+
+func TestHandleAllTasks(t *testing.T) {
+	tmp := t.TempDir()
+	alphaAudit := filepath.Join(tmp, "alpha", "audit")
+	betaAudit := filepath.Join(tmp, "beta", "audit")
+	if err := os.MkdirAll(alphaAudit, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(betaAudit, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestAuditSummary(t, alphaAudit, "20260315T120000Z-api-annotate-public", Summary{
+		Source:          "api",
+		Label:           "annotate-public",
+		DurationSeconds: 42,
+		ExitCode:        0,
+	})
+	writeTestAuditSummary(t, betaAudit, "20260315T130000Z-api-summarize-internal", Summary{
+		Source:          "api",
+		Label:           "summarize-internal",
+		DurationSeconds: 24,
+		ExitCode:        1,
+	})
+
+	s := newTestServer(t, []Project{
+		{Name: "alpha", AuditDir: alphaAudit, StateFile: filepath.Join(tmp, "alpha", "state.json")},
+		{Name: "beta", AuditDir: betaAudit, StateFile: filepath.Join(tmp, "beta", "state.json")},
+	})
+	s.api.Tasks = []Task{
+		{Name: "annotate", Project: "alpha", OutputSchemaPath: "annotation.schema.json"},
+		{Name: "summarize", Project: "beta", OutputSchemaPath: "summary.schema.json"},
+	}
+
+	mux := s.registerRoutes()
+	req := httptest.NewRequest("GET", "/tasks", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		"annotate",
+		"project alpha",
+		`href="/projects/alpha/audit/20260315T120000Z-api-annotate-public/"`,
+		"summarize",
+		"project beta",
+		`href="/projects/beta/audit/20260315T130000Z-api-summarize-internal/"`,
+		"exit 1",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected %q in body", want)
+		}
 	}
 }
 
@@ -480,7 +561,7 @@ func TestBuildTaskDashboardTasksPrefersLongestTaskName(t *testing.T) {
 		},
 	}}
 
-	got := buildTaskDashboardTasks(tasks, runs)
+	got := buildTaskDashboardTasks(Project{Name: "r"}, tasks, runs)
 	if len(got[0].Runs) != 0 {
 		t.Fatalf("shorter task matched run: %#v", got[0].Runs)
 	}
@@ -505,7 +586,7 @@ func TestBuildTaskDashboardTasksCapsRunsPerTask(t *testing.T) {
 		}
 	}
 
-	got := buildTaskDashboardTasks(tasks, runs)
+	got := buildTaskDashboardTasks(Project{Name: "r"}, tasks, runs)
 	if len(got) != 1 {
 		t.Fatalf("expected one task, got %d", len(got))
 	}

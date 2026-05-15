@@ -155,4 +155,4 @@ ls /var/log/burkebot/audit/ | grep annotate-meeting
 Each bundle contains `prompt.txt`, `codex-events.jsonl`, `commands.jsonl`,
 `last-message.txt`, and `summary.json` — see the dashboard's audit
 detail page for an indexed view. The dashboard also lists configured
-tasks and their recent API runs at `/projects/<project>/tasks`.
+tasks and their recent API runs at `/tasks`.

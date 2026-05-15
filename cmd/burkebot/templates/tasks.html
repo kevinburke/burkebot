@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{.Project.Name}} Tasks - Burkebot</title>
+    <title>{{if .ProjectScoped}}{{.Project.Name}} {{end}}Tasks - Burkebot</title>
     <style>
         * { box-sizing: border-box; }
         body {
@@ -117,24 +117,30 @@
     </style>
 </head>
 <body>
-    <h1>{{.Project.Name}} Tasks</h1>
-    <p class="subtitle">{{if .Project.Repo}}{{.Project.Repo}} &mdash; {{end}}Configured API tasks and recent runs</p>
+    <h1>{{if .ProjectScoped}}{{.Project.Name}} {{end}}Tasks</h1>
+    <p class="subtitle">{{if and .ProjectScoped .Project.Repo}}{{.Project.Repo}} &mdash; {{end}}Configured API tasks and recent runs</p>
 
     <div class="nav-links">
         {{if gt (len .Projects) 1}}<a href="/">Projects</a>{{end}}
+        {{if .ProjectScoped}}
+        <a href="/tasks">All Tasks</a>
         <a href="/projects/{{.Project.Name}}/">Audit Runs</a>
         <a href="/projects/{{.Project.Name}}/state">PR State</a>
         <span class="current">Tasks</span>
+        {{else}}
+        <span class="current">Tasks</span>
+        {{end}}
     </div>
 
     {{if .Tasks}}
         {{range .Tasks}}
+        {{$taskProject := .Project.Name}}
         <div class="card">
             <div class="card-header">
                 <div>
                     <h2 class="card-title">{{.Task.Name}}</h2>
                     <div class="card-meta">
-                        schema {{.Task.OutputSchemaPath}}{{if ne .Task.TimeoutSeconds 0}} &middot; timeout {{.Task.TimeoutSeconds}}s{{end}}
+                        {{if not $.ProjectScoped}}project {{.Project.Name}} &middot; {{end}}schema {{.Task.OutputSchemaPath}}{{if ne .Task.TimeoutSeconds 0}} &middot; timeout {{.Task.TimeoutSeconds}}s{{end}}
                     </div>
                 </div>
                 <span class="badge badge-source">{{len .Runs}} runs</span>
@@ -153,7 +159,7 @@
                 <tbody>
                 {{range .Runs}}
                     <tr>
-                        <td class="run-id"><a href="/projects/{{$.Project.Name}}/audit/{{.Bundle.RunID}}/">{{.Bundle.RunID}}</a></td>
+                        <td class="run-id"><a href="/projects/{{$taskProject}}/audit/{{.Bundle.RunID}}/">{{.Bundle.RunID}}</a></td>
                         <td>{{runTime .Bundle.RunID}}</td>
                         <td>{{if .TokenName}}{{.TokenName}}{{else}}unknown{{end}}</td>
                         <td>
@@ -178,7 +184,7 @@
         </div>
         {{end}}
     {{else}}
-        <p class="empty">No API tasks configured for this project</p>
+        <p class="empty">No API tasks configured{{if .ProjectScoped}} for this project{{end}}</p>
     {{end}}
 
     {{template "footer" .}}

@@ -36,7 +36,14 @@
 </head>
 <body>
     <h1>Burkebot Dashboard</h1>
-    <p class="subtitle">Select a project</p>
+    <p class="subtitle">Select a task or project</p>
+
+    {{if .TasksEnabled}}
+    <div class="card">
+        <a href="/tasks">Tasks</a>
+        <div class="card-meta">Configured task API runs, including recent transcript annotations</div>
+    </div>
+    {{end}}
 
     {{range .Projects}}
     <div class="card">

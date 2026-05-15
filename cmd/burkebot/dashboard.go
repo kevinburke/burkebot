@@ -315,6 +315,16 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// GET /tasks
+	if path == "/tasks" {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleAllTasks(w, r)
+		return
+	}
+
 	// All other routes start with /projects/<project>/...
 	// Split: ["", "projects", project, ...]
 	parts := strings.Split(path, "/")
@@ -416,7 +426,8 @@ func (s *Server) render(w http.ResponseWriter, name string, data any) {
 
 type indexData struct {
 	pageContext
-	Projects []Project
+	Projects     []Project
+	TasksEnabled bool
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -426,8 +437,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, "index.html", indexData{
-		pageContext: newPageContext(),
-		Projects:    s.projects,
+		pageContext:  newPageContext(),
+		Projects:     s.projects,
+		TasksEnabled: len(s.api.Tasks) > 0,
 	})
 }
 
@@ -477,14 +489,16 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request, proj *Pro
 
 type taskPageData struct {
 	pageContext
-	Project  Project
-	Projects []Project
-	Tasks    []taskDashboardTask
+	Project       Project
+	ProjectScoped bool
+	Projects      []Project
+	Tasks         []taskDashboardTask
 }
 
 type taskDashboardTask struct {
-	Task Task
-	Runs []taskDashboardRun
+	Task    Task
+	Project Project
+	Runs    []taskDashboardRun
 }
 
 type taskDashboardRun struct {
@@ -501,8 +515,25 @@ func (s *Server) hasTasksForProject(projectName string) bool {
 	return false
 }
 
+func (s *Server) handleAllTasks(w http.ResponseWriter, r *http.Request) {
+	tasks, err := s.buildAllTaskDashboardTasks()
+	if err != nil {
+		s.logger.Error("failed to load task audit runs", "error", err)
+		http.Error(w, "Failed to load task audit runs", http.StatusInternalServerError)
+		return
+	}
+
+	s.render(w, "tasks.html", taskPageData{
+		pageContext: newPageContext(),
+		Projects:    s.projects,
+		Tasks:       tasks,
+	})
+}
+
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request, proj *Project) {
-	runs, err := loadAuditRuns(proj.AuditDir, proj.Name)
+	// Task runs are identified by their task label, not by the project
+	// name in the run ID. The project only chooses the audit directory.
+	runs, err := loadAuditRuns(proj.AuditDir, "")
 	if err != nil {
 		s.logger.Error("failed to load audit runs", "error", err, "project", proj.Name)
 		http.Error(w, "Failed to load audit runs", http.StatusInternalServerError)
@@ -514,11 +545,33 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request, proj *Proje
 
 	tasks := tasksForProject(s.api.Tasks, proj.Name)
 	s.render(w, "tasks.html", taskPageData{
-		pageContext: newPageContext(),
-		Project:     *proj,
-		Projects:    s.projects,
-		Tasks:       buildTaskDashboardTasks(tasks, runs),
+		pageContext:   newPageContext(),
+		Project:       *proj,
+		ProjectScoped: true,
+		Projects:      s.projects,
+		Tasks:         buildTaskDashboardTasks(*proj, tasks, runs),
 	})
+}
+
+func (s *Server) buildAllTaskDashboardTasks() ([]taskDashboardTask, error) {
+	var out []taskDashboardTask
+	for _, proj := range s.projects {
+		tasks := tasksForProject(s.api.Tasks, proj.Name)
+		if len(tasks) == 0 {
+			continue
+		}
+		// See handleTasks: task labels, not project names, identify
+		// which audit bundles belong to configured tasks.
+		runs, err := loadAuditRuns(proj.AuditDir, "")
+		if err != nil {
+			return nil, fmt.Errorf("project %q: %w", proj.Name, err)
+		}
+		if len(runs) > maxTaskDashboardAuditRuns {
+			runs = runs[:maxTaskDashboardAuditRuns]
+		}
+		out = append(out, buildTaskDashboardTasks(proj, tasks, runs)...)
+	}
+	return out, nil
 }
 
 func tasksForProject(tasks []Task, projectName string) []Task {
@@ -531,11 +584,11 @@ func tasksForProject(tasks []Task, projectName string) []Task {
 	return out
 }
 
-func buildTaskDashboardTasks(tasks []Task, runs []AuditBundle) []taskDashboardTask {
+func buildTaskDashboardTasks(project Project, tasks []Task, runs []AuditBundle) []taskDashboardTask {
 	out := make([]taskDashboardTask, len(tasks))
 	taskIndexes := make(map[string]int, len(tasks))
 	for i, task := range tasks {
-		out[i] = taskDashboardTask{Task: task}
+		out[i] = taskDashboardTask{Task: task, Project: project}
 		taskIndexes[task.Name] = i
 	}
 
