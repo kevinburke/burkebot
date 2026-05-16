@@ -629,30 +629,62 @@ func TestBuildTaskDashboardTasksPrefersLongestTaskName(t *testing.T) {
 	if got[1].Runs[0].TokenName != "alice" {
 		t.Fatalf("expected token alice, got %q", got[1].Runs[0].TokenName)
 	}
+	if got[1].TotalRuns != 1 {
+		t.Fatalf("expected one total run for annotate-meeting, got %d", got[1].TotalRuns)
+	}
 }
 
-func TestBuildTaskDashboardTasksCapsRunsPerTask(t *testing.T) {
-	tasks := []Task{{Name: "annotate", Project: "r"}}
-	runs := make([]AuditBundle, maxTaskDashboardRunsPerTask+10)
-	for i := range runs {
-		runs[i] = AuditBundle{
-			RunID: fmt.Sprintf("20260315T1200%02dZ-api-r-annotate-alice", i),
-			Summary: &Summary{
-				Source: "api",
-				Label:  "annotate-alice",
+func TestPaginateTaskDashboardRuns(t *testing.T) {
+	matches := make([]taskDashboardRunMatch, defaultTaskDashboardRunsPerPage+10)
+	for i := range matches {
+		matches[i] = taskDashboardRunMatch{
+			ProjectName: "r",
+			TaskName:    "annotate",
+			Bundle: AuditBundle{
+				RunID: fmt.Sprintf("20260315T1200%02dZ-api-r-annotate-alice", i),
 			},
+			TokenName: "alice",
 		}
 	}
 
-	got := buildTaskDashboardTasks(Project{Name: "r"}, tasks, runs)
-	if len(got) != 1 {
-		t.Fatalf("expected one task, got %d", len(got))
+	req := httptest.NewRequest("GET", "/projects/r/tasks", nil)
+	page, perPage := taskDashboardPageParams(req)
+	got, pagination := paginateTaskDashboardRuns(req, matches, page, perPage)
+	if len(got) != defaultTaskDashboardRunsPerPage {
+		t.Fatalf("expected %d runs, got %d", defaultTaskDashboardRunsPerPage, len(got))
 	}
-	if len(got[0].Runs) != maxTaskDashboardRunsPerTask {
-		t.Fatalf("expected %d runs, got %d", maxTaskDashboardRunsPerTask, len(got[0].Runs))
+	if pagination.Start != 1 || pagination.End != defaultTaskDashboardRunsPerPage {
+		t.Fatalf("unexpected first page range: %d-%d", pagination.Start, pagination.End)
 	}
-	if got[0].Runs[0].Bundle.RunID != runs[0].RunID {
-		t.Fatalf("expected cap to preserve run order, got first run %q", got[0].Runs[0].Bundle.RunID)
+	if !pagination.HasNext || pagination.NextURL != "/projects/r/tasks?page=2" {
+		t.Fatalf("unexpected next page: has_next=%v url=%q", pagination.HasNext, pagination.NextURL)
+	}
+
+	req = httptest.NewRequest("GET", "/projects/r/tasks?page=2", nil)
+	page, perPage = taskDashboardPageParams(req)
+	got, pagination = paginateTaskDashboardRuns(req, matches, page, perPage)
+	if len(got) != 10 {
+		t.Fatalf("expected 10 runs on second page, got %d", len(got))
+	}
+	if pagination.Start != defaultTaskDashboardRunsPerPage+1 || pagination.End != len(matches) {
+		t.Fatalf("unexpected second page range: %d-%d", pagination.Start, pagination.End)
+	}
+	if !pagination.HasPrev || pagination.PrevURL != "/projects/r/tasks?page=1" {
+		t.Fatalf("unexpected previous page: has_prev=%v url=%q", pagination.HasPrev, pagination.PrevURL)
+	}
+	if pagination.HasNext {
+		t.Fatal("second page should not have next page")
+	}
+}
+
+func TestTaskDashboardPageParamsClampPerPage(t *testing.T) {
+	req := httptest.NewRequest("GET", "/tasks?page=3&per_page=9999", nil)
+	page, perPage := taskDashboardPageParams(req)
+	if page != 3 {
+		t.Fatalf("expected page 3, got %d", page)
+	}
+	if perPage != maxTaskDashboardRunsPerPage {
+		t.Fatalf("expected per_page clamp to %d, got %d", maxTaskDashboardRunsPerPage, perPage)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -22,8 +23,9 @@ import (
 var templateFS embed.FS
 
 const maxRawFileSize = 5 * 1024 * 1024 // 5 MB
-const maxTaskDashboardAuditRuns = 500
-const maxTaskDashboardRunsPerTask = 25
+const maxTaskDashboardAuditRuns = 5000
+const defaultTaskDashboardRunsPerPage = 100
+const maxTaskDashboardRunsPerPage = 250
 
 // Server provides the web UI for Burkebot audit and state management,
 // plus the task-API endpoints under /api/.
@@ -493,6 +495,7 @@ type taskPageData struct {
 	ProjectScoped bool
 	Projects      []Project
 	Tasks         []taskDashboardTask
+	Pagination    taskDashboardPagination
 }
 
 type taskDashboardTask struct {
@@ -500,11 +503,31 @@ type taskDashboardTask struct {
 	Project     Project
 	Runs        []taskDashboardRun
 	ScannedRuns int
+	TotalRuns   int
 }
 
 type taskDashboardRun struct {
 	Bundle    AuditBundle
 	TokenName string
+}
+
+type taskDashboardRunMatch struct {
+	ProjectName string
+	TaskName    string
+	Bundle      AuditBundle
+	TokenName   string
+}
+
+type taskDashboardPagination struct {
+	Page      int
+	PerPage   int
+	TotalRuns int
+	Start     int
+	End       int
+	HasPrev   bool
+	HasNext   bool
+	PrevURL   string
+	NextURL   string
 }
 
 func (s *Server) hasTasksForProject(projectName string) bool {
@@ -517,7 +540,8 @@ func (s *Server) hasTasksForProject(projectName string) bool {
 }
 
 func (s *Server) handleAllTasks(w http.ResponseWriter, r *http.Request) {
-	tasks, err := s.buildAllTaskDashboardTasks()
+	page, perPage := taskDashboardPageParams(r)
+	tasks, pagination, err := s.buildAllTaskDashboardTasks(r, page, perPage)
 	if err != nil {
 		s.logger.Error("failed to load task audit runs", "error", err)
 		http.Error(w, "Failed to load task audit runs", http.StatusInternalServerError)
@@ -528,6 +552,7 @@ func (s *Server) handleAllTasks(w http.ResponseWriter, r *http.Request) {
 		pageContext: newPageContext(),
 		Projects:    s.projects,
 		Tasks:       tasks,
+		Pagination:  pagination,
 	})
 }
 
@@ -545,17 +570,28 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request, proj *Proje
 	}
 
 	tasks := tasksForProject(s.api.Tasks, proj.Name)
+	allMatches := matchTaskDashboardRuns(proj.Name, tasks, runs)
+	page, perPage := taskDashboardPageParams(r)
+	pageMatches, pagination := paginateTaskDashboardRuns(r, allMatches, page, perPage)
 	s.render(w, "tasks.html", taskPageData{
 		pageContext:   newPageContext(),
 		Project:       *proj,
 		ProjectScoped: true,
 		Projects:      s.projects,
-		Tasks:         buildTaskDashboardTasks(*proj, tasks, runs),
+		Tasks:         buildTaskDashboardTasksFromMatches(*proj, tasks, pageMatches, allMatches, len(runs)),
+		Pagination:    pagination,
 	})
 }
 
-func (s *Server) buildAllTaskDashboardTasks() ([]taskDashboardTask, error) {
-	var out []taskDashboardTask
+func (s *Server) buildAllTaskDashboardTasks(r *http.Request, page, perPage int) ([]taskDashboardTask, taskDashboardPagination, error) {
+	type projectTaskRuns struct {
+		project     Project
+		tasks       []Task
+		scannedRuns int
+	}
+
+	var projectRuns []projectTaskRuns
+	var allMatches []taskDashboardRunMatch
 	for _, proj := range s.projects {
 		tasks := tasksForProject(s.api.Tasks, proj.Name)
 		if len(tasks) == 0 {
@@ -565,14 +601,28 @@ func (s *Server) buildAllTaskDashboardTasks() ([]taskDashboardTask, error) {
 		// which audit bundles belong to configured tasks.
 		runs, err := loadAuditRuns(proj.AuditDir, "")
 		if err != nil {
-			return nil, fmt.Errorf("project %q: %w", proj.Name, err)
+			return nil, taskDashboardPagination{}, fmt.Errorf("project %q: %w", proj.Name, err)
 		}
 		if len(runs) > maxTaskDashboardAuditRuns {
 			runs = runs[:maxTaskDashboardAuditRuns]
 		}
-		out = append(out, buildTaskDashboardTasks(proj, tasks, runs)...)
+		projectRuns = append(projectRuns, projectTaskRuns{
+			project:     proj,
+			tasks:       tasks,
+			scannedRuns: len(runs),
+		})
+		allMatches = append(allMatches, matchTaskDashboardRuns(proj.Name, tasks, runs)...)
 	}
-	return out, nil
+	sort.SliceStable(allMatches, func(i, j int) bool {
+		return allMatches[i].Bundle.RunID > allMatches[j].Bundle.RunID
+	})
+
+	pageMatches, pagination := paginateTaskDashboardRuns(r, allMatches, page, perPage)
+	var out []taskDashboardTask
+	for _, runs := range projectRuns {
+		out = append(out, buildTaskDashboardTasksFromMatches(runs.project, runs.tasks, pageMatches, allMatches, runs.scannedRuns)...)
+	}
+	return out, pagination, nil
 }
 
 func tasksForProject(tasks []Task, projectName string) []Task {
@@ -586,17 +636,12 @@ func tasksForProject(tasks []Task, projectName string) []Task {
 }
 
 func buildTaskDashboardTasks(project Project, tasks []Task, runs []AuditBundle) []taskDashboardTask {
-	out := make([]taskDashboardTask, len(tasks))
-	taskIndexes := make(map[string]int, len(tasks))
-	for i, task := range tasks {
-		out[i] = taskDashboardTask{
-			Task:        task,
-			Project:     project,
-			ScannedRuns: len(runs),
-		}
-		taskIndexes[task.Name] = i
-	}
+	matches := matchTaskDashboardRuns(project.Name, tasks, runs)
+	return buildTaskDashboardTasksFromMatches(project, tasks, matches, matches, len(runs))
+}
 
+func matchTaskDashboardRuns(projectName string, tasks []Task, runs []AuditBundle) []taskDashboardRunMatch {
+	var matches []taskDashboardRunMatch
 	for _, run := range runs {
 		if run.Summary == nil {
 			continue
@@ -605,19 +650,109 @@ func buildTaskDashboardTasks(project Project, tasks []Task, runs []AuditBundle) 
 		if taskName == "" {
 			continue
 		}
-		idx, ok := taskIndexes[taskName]
+		matches = append(matches, taskDashboardRunMatch{
+			ProjectName: projectName,
+			TaskName:    taskName,
+			Bundle:      run,
+			TokenName:   tokenName,
+		})
+	}
+	return matches
+}
+
+func buildTaskDashboardTasksFromMatches(project Project, tasks []Task, pageMatches, allMatches []taskDashboardRunMatch, scannedRuns int) []taskDashboardTask {
+	out := make([]taskDashboardTask, len(tasks))
+	taskIndexes := make(map[string]int, len(tasks))
+	for i, task := range tasks {
+		out[i] = taskDashboardTask{
+			Task:        task,
+			Project:     project,
+			ScannedRuns: scannedRuns,
+		}
+		taskIndexes[task.Name] = i
+	}
+
+	for _, match := range allMatches {
+		if match.ProjectName != project.Name {
+			continue
+		}
+		idx, ok := taskIndexes[match.TaskName]
 		if !ok {
 			continue
 		}
-		if len(out[idx].Runs) >= maxTaskDashboardRunsPerTask {
+		out[idx].TotalRuns++
+	}
+
+	for _, match := range pageMatches {
+		if match.ProjectName != project.Name {
+			continue
+		}
+		idx, ok := taskIndexes[match.TaskName]
+		if !ok {
 			continue
 		}
 		out[idx].Runs = append(out[idx].Runs, taskDashboardRun{
-			Bundle:    run,
-			TokenName: tokenName,
+			Bundle:    match.Bundle,
+			TokenName: match.TokenName,
 		})
 	}
 	return out
+}
+
+func taskDashboardPageParams(r *http.Request) (page, perPage int) {
+	page = 1
+	perPage = defaultTaskDashboardRunsPerPage
+	q := r.URL.Query()
+	if raw := q.Get("page"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			page = n
+		}
+	}
+	if raw := q.Get("per_page"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			perPage = n
+		}
+	}
+	if perPage > maxTaskDashboardRunsPerPage {
+		perPage = maxTaskDashboardRunsPerPage
+	}
+	return page, perPage
+}
+
+func paginateTaskDashboardRuns(r *http.Request, matches []taskDashboardRunMatch, page, perPage int) ([]taskDashboardRunMatch, taskDashboardPagination) {
+	total := len(matches)
+	start := min((page-1)*perPage, total)
+	end := min(start+perPage, total)
+
+	pagination := taskDashboardPagination{
+		Page:      page,
+		PerPage:   perPage,
+		TotalRuns: total,
+		HasPrev:   page > 1,
+		HasNext:   end < total,
+	}
+	if total > 0 {
+		pagination.Start = start + 1
+		pagination.End = end
+	}
+	if pagination.HasPrev {
+		pagination.PrevURL = taskDashboardPageURL(r, page-1, perPage)
+	}
+	if pagination.HasNext {
+		pagination.NextURL = taskDashboardPageURL(r, page+1, perPage)
+	}
+	return matches[start:end], pagination
+}
+
+func taskDashboardPageURL(r *http.Request, page, perPage int) string {
+	q := r.URL.Query()
+	q.Set("page", strconv.Itoa(page))
+	if perPage == defaultTaskDashboardRunsPerPage {
+		q.Del("per_page")
+	} else {
+		q.Set("per_page", strconv.Itoa(perPage))
+	}
+	return r.URL.Path + "?" + q.Encode()
 }
 
 func taskRunSummaryLabel(run AuditBundle, tasks []Task) (taskName, tokenName string) {

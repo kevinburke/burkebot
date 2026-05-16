@@ -98,9 +98,37 @@
         }
         .run-table a { color: #3b82f6; text-decoration: none; font-weight: 600; }
         .run-table a:hover { text-decoration: underline; }
+        .pager {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin: 0 0 16px;
+            font-size: 0.9em;
+        }
+        .pager-links {
+            display: flex;
+            gap: 8px;
+        }
+        .pager a {
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 6px;
+            background: #3b82f6;
+            color: white;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        .pager a:hover { background: #2563eb; }
         .empty { color: #888; font-style: italic; padding: 8px 0; }
         @media (max-width: 700px) {
             .card-header { display: block; }
+            .pager {
+                display: block;
+            }
+            .pager-links {
+                margin-top: 8px;
+            }
             .run-table, .run-table thead, .run-table tbody, .run-table tr, .run-table th, .run-table td {
                 display: block;
             }
@@ -132,6 +160,16 @@
         {{end}}
     </div>
 
+    {{if .Pagination.TotalRuns}}
+    <div class="pager">
+        <span class="card-meta">Showing runs {{.Pagination.Start}}-{{.Pagination.End}} of {{.Pagination.TotalRuns}}</span>
+        <div class="pager-links">
+            {{if .Pagination.HasPrev}}<a href="{{.Pagination.PrevURL}}">Newer</a>{{end}}
+            {{if .Pagination.HasNext}}<a href="{{.Pagination.NextURL}}">Older</a>{{end}}
+        </div>
+    </div>
+    {{end}}
+
     {{if .Tasks}}
         {{range .Tasks}}
         {{$taskProject := .Project.Name}}
@@ -143,7 +181,7 @@
                         {{if not $.ProjectScoped}}project {{.Project.Name}} &middot; {{end}}schema {{.Task.OutputSchemaPath}}{{if ne .Task.TimeoutSeconds 0}} &middot; timeout {{.Task.TimeoutSeconds}}s{{end}}
                     </div>
                 </div>
-                <span class="badge badge-source">{{len .Runs}} runs</span>
+                <span class="badge badge-source">{{.TotalRuns}} runs</span>
             </div>
 
             {{if .Task.Inputs}}
@@ -179,12 +217,22 @@
                 </tbody>
             </table>
             {{else}}
-            <p class="empty">No matching runs found among {{.ScannedRuns}} recent audit bundles</p>
+            <p class="empty">{{if .TotalRuns}}No runs on this page{{else}}No matching runs found among {{.ScannedRuns}} recent audit bundles{{end}}</p>
             {{end}}
         </div>
         {{end}}
     {{else}}
         <p class="empty">No API tasks configured{{if .ProjectScoped}} for this project{{end}}</p>
+    {{end}}
+
+    {{if .Pagination.TotalRuns}}
+    <div class="pager">
+        <span class="card-meta">Showing runs {{.Pagination.Start}}-{{.Pagination.End}} of {{.Pagination.TotalRuns}}</span>
+        <div class="pager-links">
+            {{if .Pagination.HasPrev}}<a href="{{.Pagination.PrevURL}}">Newer</a>{{end}}
+            {{if .Pagination.HasNext}}<a href="{{.Pagination.NextURL}}">Older</a>{{end}}
+        </div>
+    </div>
     {{end}}
 
     {{template "footer" .}}
