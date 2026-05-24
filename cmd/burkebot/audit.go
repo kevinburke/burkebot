@@ -171,18 +171,31 @@ type CodexCommand struct {
 	Status   string
 }
 
-// loadCodexEvents reads codex-events.jsonl and extracts completed commands
-// and the final agent message.
-func loadCodexEvents(path string) (commands []CodexCommand, agentMessage string, err error) {
+// ConversationStep is one step in the agent's conversation: either an
+// agent message or a command execution, in the order they occurred.
+type ConversationStep struct {
+	Type     string // "agent_message" or "command"
+	Text     string // agent_message text
+	Command  string // command_execution command
+	Output   string // command_execution output
+	ExitCode int    // command_execution exit code
+	Status   string // command_execution status
+}
+
+// loadConversationTimeline reads codex-events.jsonl and returns an
+// ordered slice of conversation steps (agent messages interleaved with
+// command executions) preserving the sequence in which they occurred.
+func loadConversationTimeline(path string) ([]ConversationStep, error) {
 	f, err := os.Open(path)
 	if os.IsNotExist(err) {
-		return nil, "", nil
+		return nil, nil
 	}
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	defer f.Close()
 
+	var steps []ConversationStep
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -207,17 +220,44 @@ func loadCodexEvents(path string) (commands []CodexCommand, agentMessage string,
 			if item.ExitCode != nil {
 				exitCode = *item.ExitCode
 			}
-			commands = append(commands, CodexCommand{
+			steps = append(steps, ConversationStep{
+				Type:     "command",
 				Command:  item.Command,
 				Output:   item.AggregatedOutput,
 				ExitCode: exitCode,
 				Status:   item.Status,
 			})
 		case "agent_message":
-			agentMessage = item.Text
+			steps = append(steps, ConversationStep{
+				Type: "agent_message",
+				Text: item.Text,
+			})
 		}
 	}
-	return commands, agentMessage, scanner.Err()
+	return steps, scanner.Err()
+}
+
+// loadCodexEvents reads codex-events.jsonl and extracts completed commands
+// and the final agent message.
+func loadCodexEvents(path string) (commands []CodexCommand, agentMessage string, err error) {
+	steps, err := loadConversationTimeline(path)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, step := range steps {
+		switch step.Type {
+		case "command":
+			commands = append(commands, CodexCommand{
+				Command:  step.Command,
+				Output:   step.Output,
+				ExitCode: step.ExitCode,
+				Status:   step.Status,
+			})
+		case "agent_message":
+			agentMessage = step.Text
+		}
+	}
+	return commands, agentMessage, nil
 }
 
 // loadCommands reads commands.jsonl from an audit bundle.

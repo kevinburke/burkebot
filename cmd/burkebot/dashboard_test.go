@@ -375,6 +375,109 @@ func TestHandleAuditDetail(t *testing.T) {
 	}
 }
 
+func TestHandleAuditDetailTimeline(t *testing.T) {
+	tmp := t.TempDir()
+	auditDir := filepath.Join(tmp, "audit")
+	runID := "20260315T120000Z-pr-returns-pr-42"
+	writeTestAudit(t, auditDir, runID)
+
+	events := `{"type":"item.completed","item":{"type":"agent_message","text":"I will check the tests."}}
+{"type":"item.completed","item":{"type":"command_execution","command":"go test ./...","aggregated_output":"ok\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"All tests pass."}}
+`
+	dir := filepath.Join(auditDir, runID)
+	os.WriteFile(filepath.Join(dir, "codex-events.jsonl"), []byte(events), 0o644)
+
+	s := newTestServer(t, []Project{{Name: "r", AuditDir: auditDir, StateFile: filepath.Join(tmp, "s.json")}})
+	mux := s.registerRoutes()
+	req := httptest.NewRequest("GET", "/projects/r/audit/"+runID, nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		"Conversation (3 steps)",
+		"I will check the tests.",
+		"go test ./...",
+		"All tests pass.",
+		"Agent",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected %q in body", want)
+		}
+	}
+}
+
+func TestLoadConversationTimeline(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "codex-events.jsonl")
+
+	events := `{"type":"item.completed","item":{"type":"agent_message","text":"Let me inspect the code."}}
+{"type":"item.completed","item":{"type":"command_execution","command":"ls -la","aggregated_output":"total 0\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"type":"command_execution","command":"cat bad.go","aggregated_output":"","exit_code":1,"status":"completed"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"The file is missing."}}
+`
+	os.WriteFile(path, []byte(events), 0o644)
+
+	steps, err := loadConversationTimeline(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 4 {
+		t.Fatalf("expected 4 steps, got %d", len(steps))
+	}
+	if steps[0].Type != "agent_message" || steps[0].Text != "Let me inspect the code." {
+		t.Errorf("step 0: %+v", steps[0])
+	}
+	if steps[1].Type != "command" || steps[1].Command != "ls -la" || steps[1].ExitCode != 0 {
+		t.Errorf("step 1: %+v", steps[1])
+	}
+	if steps[2].Type != "command" || steps[2].ExitCode != 1 {
+		t.Errorf("step 2: %+v", steps[2])
+	}
+	if steps[3].Type != "agent_message" || steps[3].Text != "The file is missing." {
+		t.Errorf("step 3: %+v", steps[3])
+	}
+}
+
+func TestLoadConversationTimelineMissingFile(t *testing.T) {
+	steps, err := loadConversationTimeline(filepath.Join(t.TempDir(), "missing.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 0 {
+		t.Fatalf("expected 0 steps, got %d", len(steps))
+	}
+}
+
+func TestLoadCodexEventsViaTimeline(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "codex-events.jsonl")
+
+	events := `{"type":"item.completed","item":{"type":"agent_message","text":"first message"}}
+{"type":"item.completed","item":{"type":"command_execution","command":"echo hi","aggregated_output":"hi\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"final message"}}
+`
+	os.WriteFile(path, []byte(events), 0o644)
+
+	commands, agentMsg, err := loadCodexEvents(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commands) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(commands))
+	}
+	if commands[0].Command != "echo hi" {
+		t.Errorf("expected 'echo hi', got %q", commands[0].Command)
+	}
+	if agentMsg != "final message" {
+		t.Errorf("expected 'final message', got %q", agentMsg)
+	}
+}
+
 func TestHandleAuditFile(t *testing.T) {
 	tmp := t.TempDir()
 	auditDir := filepath.Join(tmp, "audit")

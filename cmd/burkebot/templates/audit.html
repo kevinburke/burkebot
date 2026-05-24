@@ -105,6 +105,16 @@
             overflow-y: auto;
             background: #fafafa;
         }
+        .timeline-message { margin-bottom: 8px; }
+        .timeline-label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 4px;
+        }
+        .timeline-step { font-size: 0.75em; color: #9ca3af; }
+        .badge-agent { background: #dbeafe; color: #1d4ed8; }
+        .timeline-message .output { max-height: 400px; }
         .header-row {
             display: flex;
             justify-content: space-between;
@@ -175,6 +185,34 @@
     </div>
     {{end}}
 
+    {{if .Timeline}}
+    <h2>Conversation ({{len .Timeline}} steps)</h2>
+    <div class="card">
+        {{range $i, $step := .Timeline}}
+        {{if eq $step.Type "agent_message"}}
+        <div class="timeline-message">
+            <div class="timeline-label"><span class="badge badge-agent">Agent</span> <span class="timeline-step">step {{$i}}</span></div>
+            <div class="output">{{$step.Text}}</div>
+        </div>
+        {{else if eq $step.Type "command"}}
+        <div class="codex-cmd">
+            <div class="codex-cmd-header{{if ne $step.ExitCode 0}} failed{{end}}">
+                <span>{{$step.Command}}</span>
+                {{if ne $step.ExitCode 0}}
+                    <span class="badge badge-failure">exit {{$step.ExitCode}}</span>
+                {{else}}
+                    <span class="badge badge-success">exit 0</span>
+                {{end}}
+            </div>
+            {{if $step.Output}}
+            <div class="codex-cmd-output">{{$step.Output}}</div>
+            {{end}}
+        </div>
+        {{end}}
+        {{end}}
+    </div>
+    {{else}}
+    {{/* Fallback for bundles without codex-events.jsonl */}}
     {{if .AgentMessage}}
     <h2>Agent Result</h2>
     <div class="card">
@@ -224,6 +262,7 @@
     <div class="card">
         <div class="output">{{.LastMessage}}</div>
     </div>
+    {{end}}
     {{end}}
 
     {{if .Stderr}}

@@ -811,6 +811,7 @@ type auditDetailData struct {
 	Commands       []Command
 	CodexCommands  []CodexCommand
 	AgentMessage   string
+	Timeline       []ConversationStep
 	Stderr         string
 	RerunCSRFToken string
 	TasksEnabled   bool
@@ -848,9 +849,13 @@ func (s *Server) handleAuditDetail(w http.ResponseWriter, r *http.Request, proj 
 	commands, _ := loadCommands(filepath.Join(dir, "commands.jsonl"))
 	data.Commands = commands
 
-	codexCmds, agentMsg, _ := loadCodexEvents(filepath.Join(dir, "codex-events.jsonl"))
+	eventsPath := filepath.Join(dir, "codex-events.jsonl")
+	codexCmds, agentMsg, _ := loadCodexEvents(eventsPath)
 	data.CodexCommands = codexCmds
 	data.AgentMessage = agentMsg
+
+	timeline, _ := loadConversationTimeline(eventsPath)
+	data.Timeline = timeline
 
 	s.render(w, "audit.html", data)
 }
