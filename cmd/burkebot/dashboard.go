@@ -840,7 +840,7 @@ func (s *Server) handleAuditDetail(w http.ResponseWriter, r *http.Request, proj 
 		return
 	}
 
-	followupEnabled := s.prompt.Enabled && codexSessionsDir(proj.AuditDir, runID) != ""
+	followupEnabled := s.prompt.RunnerPath != "" && codexSessionsDir(proj.AuditDir, runID) != ""
 	followupPath := "/projects/" + proj.Name + "/audit/" + runID + "/followup"
 
 	data := auditDetailData{

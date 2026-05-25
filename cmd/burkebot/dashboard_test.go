@@ -496,7 +496,7 @@ func TestHandleAuditDetailFollowupForm(t *testing.T) {
 	os.WriteFile(filepath.Join(sessionsDir, "session.jsonl"), []byte(`{"type":"session_meta","payload":{"id":"test-uuid"}}`+"\n"), 0o644)
 
 	s := newTestServer(t, []Project{{Name: "r", AuditDir: auditDir, StateFile: filepath.Join(tmp, "s.json")}})
-	s.prompt = promptRunnerConfig{Enabled: true}
+	s.prompt = promptRunnerConfig{RunnerPath: "/usr/local/bin/burkebot-codex-run"}
 
 	mux := s.registerRoutes()
 	req := httptest.NewRequest("GET", "/projects/r/audit/"+runID, nil)
@@ -522,7 +522,7 @@ func TestHandleAuditDetailNoFollowupWithoutSessions(t *testing.T) {
 	writeTestAudit(t, auditDir, runID)
 
 	s := newTestServer(t, []Project{{Name: "r", AuditDir: auditDir, StateFile: filepath.Join(tmp, "s.json")}})
-	s.prompt = promptRunnerConfig{Enabled: true}
+	s.prompt = promptRunnerConfig{RunnerPath: "/usr/local/bin/burkebot-codex-run"}
 
 	mux := s.registerRoutes()
 	req := httptest.NewRequest("GET", "/projects/r/audit/"+runID, nil)
@@ -550,7 +550,7 @@ func TestHandleFollowup(t *testing.T) {
 
 	newRunID := "20260315T130000Z-followup-r-web-read-only-safe-followup"
 	s := newTestServer(t, []Project{{Name: "r", AuditDir: auditDir, StateFile: filepath.Join(tmp, "s.json")}})
-	s.prompt = promptRunnerConfig{Enabled: true}
+	s.prompt = promptRunnerConfig{RunnerPath: "/usr/local/bin/burkebot-codex-run"}
 	s.runFollowup = func(logger *slog.Logger, cfg promptRunnerConfig, proj Project, policy promptPolicy, sessions, prompt string) (runResult, error) {
 		if sessions != sessionsDir {
 			t.Errorf("expected sessions dir %q, got %q", sessionsDir, sessions)
@@ -588,7 +588,7 @@ func TestHandleFollowupEmptyPrompt(t *testing.T) {
 	os.WriteFile(filepath.Join(sessionsDir, "session.jsonl"), []byte(`{"type":"session_meta","payload":{"id":"test-uuid"}}`+"\n"), 0o644)
 
 	s := newTestServer(t, []Project{{Name: "r", AuditDir: auditDir, StateFile: filepath.Join(tmp, "s.json")}})
-	s.prompt = promptRunnerConfig{Enabled: true}
+	s.prompt = promptRunnerConfig{RunnerPath: "/usr/local/bin/burkebot-codex-run"}
 
 	mux := s.registerRoutes()
 	form := url.Values{"prompt": {""}}
@@ -613,7 +613,7 @@ func TestHandleFollowupNoSessions(t *testing.T) {
 	writeTestAudit(t, auditDir, runID)
 
 	s := newTestServer(t, []Project{{Name: "r", AuditDir: auditDir, StateFile: filepath.Join(tmp, "s.json")}})
-	s.prompt = promptRunnerConfig{Enabled: true}
+	s.prompt = promptRunnerConfig{RunnerPath: "/usr/local/bin/burkebot-codex-run"}
 
 	mux := s.registerRoutes()
 	form := url.Values{"prompt": {"hello"}}

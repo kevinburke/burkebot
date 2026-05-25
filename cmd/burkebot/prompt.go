@@ -257,7 +257,7 @@ func redirectAuditMessage(w http.ResponseWriter, r *http.Request, proj *Project,
 }
 
 func (s *Server) handleFollowup(w http.ResponseWriter, r *http.Request, proj *Project, runID string) {
-	if !s.prompt.Enabled {
+	if s.prompt.RunnerPath == "" {
 		http.NotFound(w, r)
 		return
 	}
