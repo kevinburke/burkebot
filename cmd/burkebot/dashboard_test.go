@@ -176,6 +176,12 @@ func TestHandleProject(t *testing.T) {
 	if !strings.Contains(body, "#42") {
 		t.Fatalf("expected PR state in body")
 	}
+	if !strings.Contains(body, "test prompt") {
+		t.Fatalf("expected prompt preview in body")
+	}
+	if !strings.Contains(body, "test message") {
+		t.Fatalf("expected agent preview in body")
+	}
 }
 
 func TestHandleTasks(t *testing.T) {

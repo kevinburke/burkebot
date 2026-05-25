@@ -68,6 +68,22 @@
         .badge-failure { background: #fee2e2; color: #b91c1c; }
         .badge-source { background: #dbeafe; color: #1d4ed8; }
         .badge-dangerous { background: #fef3c7; color: #b45309; }
+        .card-prompt {
+            margin-top: 6px;
+            font-size: 0.85em;
+            color: #374151;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .card-agent {
+            margin-top: 4px;
+            font-size: 0.8em;
+            color: #6b7280;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
         .empty { color: #888; font-style: italic; padding: 10px 0; }
         .state-table { width: 100%; border-collapse: collapse; }
         .state-table th, .state-table td {
@@ -223,6 +239,12 @@
             </div>
             {{else}}
             <div class="card-meta"><em>summary unavailable</em></div>
+            {{end}}
+            {{if .PromptPreview}}
+            <div class="card-prompt">{{.PromptPreview}}</div>
+            {{end}}
+            {{if .AgentPreview}}
+            <div class="card-agent">{{.AgentPreview}}</div>
             {{end}}
         </div>
         {{end}}

@@ -34,10 +34,12 @@ type AuditFile struct {
 
 // AuditBundle represents one run directory under the audit root.
 type AuditBundle struct {
-	RunID    string
-	Summary  *Summary    // nil if summary.json missing/corrupt
-	Files    []string    // filenames present in the directory
-	FileInfo []AuditFile // filenames with sizes
+	RunID         string
+	Summary       *Summary    // nil if summary.json missing/corrupt
+	Files         []string    // filenames present in the directory
+	FileInfo      []AuditFile // filenames with sizes
+	PromptPreview string      // first line of prompt.txt (truncated)
+	AgentPreview  string      // first line of last-message.txt (truncated)
 }
 
 // Command represents one line from commands.jsonl.
@@ -129,9 +131,11 @@ func loadBundle(auditDir, runID string) (*AuditBundle, error) {
 	}
 
 	b := &AuditBundle{
-		RunID:    runID,
-		Files:    files,
-		FileInfo: fileInfo,
+		RunID:         runID,
+		Files:         files,
+		FileInfo:      fileInfo,
+		PromptPreview: readFilePreview(filepath.Join(dir, "prompt.txt"), 200),
+		AgentPreview:  readFilePreview(filepath.Join(dir, "last-message.txt"), 200),
 	}
 
 	summaryPath := filepath.Join(dir, "summary.json")
@@ -144,6 +148,26 @@ func loadBundle(auditDir, runID string) (*AuditBundle, error) {
 	}
 
 	return b, nil
+}
+
+// readFilePreview reads the first line of a file, truncated to maxLen
+// bytes. Returns "" if the file doesn't exist or is empty.
+func readFilePreview(path string, maxLen int) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	if !scanner.Scan() {
+		return ""
+	}
+	line := scanner.Text()
+	line = strings.TrimSpace(line)
+	if len(line) > maxLen {
+		line = line[:maxLen] + "..."
+	}
+	return line
 }
 
 // CodexEvent represents one line from codex-events.jsonl.
