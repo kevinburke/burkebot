@@ -168,6 +168,68 @@ func executePromptRun(logger *slog.Logger, cfg promptRunnerConfig, proj Project,
 	return res, nil
 }
 
+// executeFollowupRun resumes a previous Codex session with a follow-up
+// prompt. sessionsDir is the codex-sessions directory from the original
+// audit bundle. The runner is invoked with --resume-session pointing at
+// the exported session files, and --job-dir for a clean environment.
+func executeFollowupRun(logger *slog.Logger, cfg promptRunnerConfig, proj Project, policy promptPolicy, sessionsDir, prompt string) (runResult, error) {
+	repoDir := proj.RepoDirectory(cfg.RepoRoot)
+	if repoDir == "" {
+		return runResult{}, errors.New("project has no repo directory")
+	}
+	if info, err := os.Stat(repoDir); err != nil || !info.IsDir() {
+		return runResult{}, fmt.Errorf("repo directory %q is not available", repoDir)
+	}
+	if info, err := os.Stat(cfg.RunnerPath); err != nil || info.IsDir() {
+		return runResult{}, fmt.Errorf("runner binary %q is not available", cfg.RunnerPath)
+	}
+	if info, err := os.Stat(sessionsDir); err != nil || !info.IsDir() {
+		return runResult{}, fmt.Errorf("sessions directory %q is not available", sessionsDir)
+	}
+	if cfg.JobsDir == "" {
+		return runResult{}, errors.New("JobsDir not configured (pass --jobs-dir to the dashboard)")
+	}
+	if cfg.CodexAuthDir == "" {
+		return runResult{}, errors.New("CodexAuthDir not configured (pass --codex-auth-dir to the dashboard)")
+	}
+
+	jobDir, jobRepoDir, err := makeJobDir(cfg.JobsDir, cfg.BotUser, cfg.BotGroup, "followup")
+	if err != nil {
+		return runResult{}, fmt.Errorf("creating job dir: %w", err)
+	}
+
+	runLabel := fmt.Sprintf("%s-%s-followup", proj.Name, policy.labelSuffix())
+	promptID := fmt.Sprintf("%s-followup-%d", proj.Name, len(prompt))
+
+	command := []string{}
+	if policy.GitHubCredentials {
+		command = append(command, cfg.EnvdirBinary, cfg.EnvDir)
+	}
+	command = append(command,
+		cfg.RunnerPath,
+		"--source", "followup",
+		"--label", runLabel,
+		"--prompt-id", promptID,
+		"--repo-dir", jobRepoDir,
+		"--job-dir", jobDir,
+		"--resume-session", sessionsDir,
+	)
+	if !policy.Dangerous {
+		command = append(command, "--safe")
+	}
+
+	res, err := runRunner(logger, runnerInvocation{
+		WorkingDirectory: jobDir,
+		ReadWritePaths:   uniqueNonEmptyPaths([]string{jobDir, proj.AuditDir, cfg.CodexAuthDir}),
+		Command:          command,
+		Prompt:           prompt,
+	})
+	if err != nil {
+		return res, fmt.Errorf("followup run failed: %w", err)
+	}
+	return res, nil
+}
+
 func redirectProjectMessage(w http.ResponseWriter, r *http.Request, proj *Project, message string, isError bool) {
 	values := url.Values{}
 	values.Set("message", message)
@@ -179,6 +241,73 @@ func redirectProjectMessage(w http.ResponseWriter, r *http.Request, proj *Projec
 		target += "?" + encoded
 	}
 	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
+func redirectAuditMessage(w http.ResponseWriter, r *http.Request, proj *Project, runID, message string, isError bool) {
+	values := url.Values{}
+	values.Set("message", message)
+	if isError {
+		values.Set("error", "1")
+	}
+	target := "/projects/" + proj.Name + "/audit/" + runID + "/"
+	if encoded := values.Encode(); encoded != "" {
+		target += "?" + encoded
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
+func (s *Server) handleFollowup(w http.ResponseWriter, r *http.Request, proj *Project, runID string) {
+	if !s.prompt.Enabled {
+		http.NotFound(w, r)
+		return
+	}
+	if !isValidRunID(runID) {
+		http.NotFound(w, r)
+		return
+	}
+	followupPath := "/projects/" + proj.Name + "/audit/" + runID + "/followup"
+	if !s.verifyCSRF(w, r, followupPath) {
+		return
+	}
+
+	sessionsDir := codexSessionsDir(proj.AuditDir, runID)
+	if sessionsDir == "" {
+		redirectAuditMessage(w, r, proj, runID, "No session files available for follow-up", true)
+		return
+	}
+
+	promptText := strings.TrimSpace(r.FormValue("prompt"))
+	if promptText == "" {
+		redirectAuditMessage(w, r, proj, runID, "Follow-up prompt cannot be empty", true)
+		return
+	}
+
+	policy, err := resolvePromptPolicy(
+		r.FormValue("repo_write") != "",
+		r.FormValue("workspace_write") != "",
+		r.FormValue("github_credentials") != "",
+		r.FormValue("dangerous") != "",
+	)
+	if err != nil {
+		redirectAuditMessage(w, r, proj, runID, err.Error(), true)
+		return
+	}
+
+	runner := s.runFollowup
+	if runner == nil {
+		runner = executeFollowupRun
+	}
+
+	result, err := runner(s.logger, s.prompt, *proj, policy, sessionsDir, promptText)
+	if result.RunID != "" {
+		http.Redirect(w, r, "/projects/"+proj.Name+"/audit/"+result.RunID+"/", http.StatusSeeOther)
+		return
+	}
+	if err != nil {
+		redirectAuditMessage(w, r, proj, runID, err.Error(), true)
+		return
+	}
+	redirectAuditMessage(w, r, proj, runID, "Follow-up submitted", false)
 }
 
 func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request, proj *Project) {

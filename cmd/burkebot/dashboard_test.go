@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -475,6 +476,152 @@ func TestLoadCodexEventsViaTimeline(t *testing.T) {
 	}
 	if agentMsg != "final message" {
 		t.Errorf("expected 'final message', got %q", agentMsg)
+	}
+}
+
+func TestHandleAuditDetailFollowupForm(t *testing.T) {
+	tmp := t.TempDir()
+	auditDir := filepath.Join(tmp, "audit")
+	runID := "20260315T120000Z-pr-returns-pr-42"
+	writeTestAudit(t, auditDir, runID)
+
+	sessionsDir := filepath.Join(auditDir, runID, "codex-sessions")
+	os.MkdirAll(sessionsDir, 0o755)
+	os.WriteFile(filepath.Join(sessionsDir, "session.jsonl"), []byte(`{"type":"session_meta","payload":{"id":"test-uuid"}}`+"\n"), 0o644)
+
+	s := newTestServer(t, []Project{{Name: "r", AuditDir: auditDir, StateFile: filepath.Join(tmp, "s.json")}})
+	s.prompt = promptRunnerConfig{Enabled: true}
+
+	mux := s.registerRoutes()
+	req := httptest.NewRequest("GET", "/projects/r/audit/"+runID, nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "Send Follow-up") {
+		t.Error("expected follow-up form in body")
+	}
+	if !strings.Contains(body, "/followup") {
+		t.Error("expected followup action URL in body")
+	}
+}
+
+func TestHandleAuditDetailNoFollowupWithoutSessions(t *testing.T) {
+	tmp := t.TempDir()
+	auditDir := filepath.Join(tmp, "audit")
+	runID := "20260315T120000Z-pr-returns-pr-42"
+	writeTestAudit(t, auditDir, runID)
+
+	s := newTestServer(t, []Project{{Name: "r", AuditDir: auditDir, StateFile: filepath.Join(tmp, "s.json")}})
+	s.prompt = promptRunnerConfig{Enabled: true}
+
+	mux := s.registerRoutes()
+	req := httptest.NewRequest("GET", "/projects/r/audit/"+runID, nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "Send Follow-up") {
+		t.Error("follow-up form should not appear without session files")
+	}
+}
+
+func TestHandleFollowup(t *testing.T) {
+	tmp := t.TempDir()
+	auditDir := filepath.Join(tmp, "audit")
+	runID := "20260315T120000Z-pr-returns-pr-42"
+	writeTestAudit(t, auditDir, runID)
+
+	sessionsDir := filepath.Join(auditDir, runID, "codex-sessions")
+	os.MkdirAll(sessionsDir, 0o755)
+	os.WriteFile(filepath.Join(sessionsDir, "session.jsonl"), []byte(`{"type":"session_meta","payload":{"id":"test-uuid"}}`+"\n"), 0o644)
+
+	newRunID := "20260315T130000Z-followup-r-web-read-only-safe-followup"
+	s := newTestServer(t, []Project{{Name: "r", AuditDir: auditDir, StateFile: filepath.Join(tmp, "s.json")}})
+	s.prompt = promptRunnerConfig{Enabled: true}
+	s.runFollowup = func(logger *slog.Logger, cfg promptRunnerConfig, proj Project, policy promptPolicy, sessions, prompt string) (runResult, error) {
+		if sessions != sessionsDir {
+			t.Errorf("expected sessions dir %q, got %q", sessionsDir, sessions)
+		}
+		if prompt != "please continue" {
+			t.Errorf("expected prompt 'please continue', got %q", prompt)
+		}
+		return runResult{RunID: newRunID}, nil
+	}
+
+	mux := s.registerRoutes()
+	form := url.Values{"prompt": {"please continue"}}
+	req := httptest.NewRequest("POST", "/projects/r/audit/"+runID+"/followup", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", w.Code)
+	}
+	loc := w.Header().Get("Location")
+	if !strings.Contains(loc, newRunID) {
+		t.Fatalf("expected redirect to new run, got %q", loc)
+	}
+}
+
+func TestHandleFollowupEmptyPrompt(t *testing.T) {
+	tmp := t.TempDir()
+	auditDir := filepath.Join(tmp, "audit")
+	runID := "20260315T120000Z-pr-returns-pr-42"
+	writeTestAudit(t, auditDir, runID)
+
+	sessionsDir := filepath.Join(auditDir, runID, "codex-sessions")
+	os.MkdirAll(sessionsDir, 0o755)
+	os.WriteFile(filepath.Join(sessionsDir, "session.jsonl"), []byte(`{"type":"session_meta","payload":{"id":"test-uuid"}}`+"\n"), 0o644)
+
+	s := newTestServer(t, []Project{{Name: "r", AuditDir: auditDir, StateFile: filepath.Join(tmp, "s.json")}})
+	s.prompt = promptRunnerConfig{Enabled: true}
+
+	mux := s.registerRoutes()
+	form := url.Values{"prompt": {""}}
+	req := httptest.NewRequest("POST", "/projects/r/audit/"+runID+"/followup", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", w.Code)
+	}
+	loc := w.Header().Get("Location")
+	if !strings.Contains(loc, "error=1") {
+		t.Fatalf("expected error redirect for empty prompt, got %q", loc)
+	}
+}
+
+func TestHandleFollowupNoSessions(t *testing.T) {
+	tmp := t.TempDir()
+	auditDir := filepath.Join(tmp, "audit")
+	runID := "20260315T120000Z-pr-returns-pr-42"
+	writeTestAudit(t, auditDir, runID)
+
+	s := newTestServer(t, []Project{{Name: "r", AuditDir: auditDir, StateFile: filepath.Join(tmp, "s.json")}})
+	s.prompt = promptRunnerConfig{Enabled: true}
+
+	mux := s.registerRoutes()
+	form := url.Values{"prompt": {"hello"}}
+	req := httptest.NewRequest("POST", "/projects/r/audit/"+runID+"/followup", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", w.Code)
+	}
+	loc := w.Header().Get("Location")
+	if !strings.Contains(loc, "error=1") || !strings.Contains(loc, "No+session") {
+		t.Fatalf("expected 'no session' error redirect, got %q", loc)
 	}
 }
 

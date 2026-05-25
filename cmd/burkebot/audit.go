@@ -23,6 +23,7 @@ type Summary struct {
 	ExitCode          int             `json:"exit_code"`
 	TokenUsage        json.RawMessage `json:"token_usage"`
 	CodexSessionFiles []string        `json:"codex_session_files"`
+	ResumeSessionID   string          `json:"resume_session_id,omitempty"`
 }
 
 // AuditFile holds a filename and its size.
@@ -258,6 +259,17 @@ func loadCodexEvents(path string) (commands []CodexCommand, agentMessage string,
 		}
 	}
 	return commands, agentMessage, nil
+}
+
+// codexSessionsDir returns the path to the codex-sessions directory
+// within an audit bundle, or "" if it does not exist.
+func codexSessionsDir(auditDir, runID string) string {
+	dir := filepath.Join(auditDir, runID, "codex-sessions")
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return ""
+	}
+	return dir
 }
 
 // loadCommands reads commands.jsonl from an audit bundle.

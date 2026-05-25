@@ -133,6 +133,43 @@
             cursor: pointer;
         }
         .retry-btn:hover { background: #d97706; }
+        .followup-textarea {
+            width: 100%;
+            min-height: 120px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            padding: 12px;
+            font: inherit;
+            resize: vertical;
+        }
+        .checkbox-grid {
+            display: flex;
+            gap: 16px;
+            margin-top: 12px;
+        }
+        .checkbox-option {
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 8px 12px;
+            background: #f8fafc;
+        }
+        .checkbox-option label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.9em;
+        }
+        .followup-actions { margin-top: 12px; }
+        .followup-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            background: #3b82f6;
+            color: white;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .followup-btn:hover { background: #2563eb; }
     </style>
 </head>
 <body>
@@ -269,6 +306,29 @@
     <h2>Stderr</h2>
     <div class="card">
         <div class="output">{{.Stderr}}</div>
+    </div>
+    {{end}}
+
+    {{if .FollowupEnabled}}
+    <h2>Send Follow-up</h2>
+    <div class="card">
+        <form method="POST" action="/projects/{{.Project.Name}}/audit/{{.Bundle.RunID}}/followup">
+            <input type="hidden" name="csrf_token" value="{{.FollowupCSRFToken}}">
+            <textarea name="prompt" placeholder="Send a follow-up message to continue this conversation." class="followup-textarea"></textarea>
+
+            <div class="checkbox-grid">
+                <div class="checkbox-option">
+                    <label><input type="checkbox" name="repo_write" value="1">Allow repo edits</label>
+                </div>
+                <div class="checkbox-option">
+                    <label><input type="checkbox" name="dangerous" value="1">Dangerous mode</label>
+                </div>
+            </div>
+
+            <div class="followup-actions">
+                <button type="submit" class="followup-btn">Send Follow-up</button>
+            </div>
+        </form>
     </div>
     {{end}}
 

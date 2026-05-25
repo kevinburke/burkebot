@@ -30,16 +30,17 @@ const maxTaskDashboardRunsPerPage = 250
 // Server provides the web UI for Burkebot audit and state management,
 // plus the task-API endpoints under /api/.
 type Server struct {
-	projects  []Project
-	tmpl      *template.Template
-	build     buildInfo
-	logger    *slog.Logger
-	auth      *basicAuthConfig
-	csrfKey   []byte
-	prompt    promptRunnerConfig
-	api       apiConfig
-	runPrompt func(*slog.Logger, promptRunnerConfig, Project, promptPolicy, string) (runResult, error)
-	runTask   func(*slog.Logger, taskRunRequest) (runResult, error)
+	projects    []Project
+	tmpl        *template.Template
+	build       buildInfo
+	logger      *slog.Logger
+	auth        *basicAuthConfig
+	csrfKey     []byte
+	prompt      promptRunnerConfig
+	api         apiConfig
+	runPrompt   func(*slog.Logger, promptRunnerConfig, Project, promptPolicy, string) (runResult, error)
+	runFollowup func(*slog.Logger, promptRunnerConfig, Project, promptPolicy, string, string) (runResult, error)
+	runTask     func(*slog.Logger, taskRunRequest) (runResult, error)
 }
 
 func (s *Server) projectByName(name string) *Project {
@@ -400,6 +401,14 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleAuditDetail(w, r, proj, rest[1])
+
+	// POST /projects/<project>/audit/<run_id>/followup
+	case len(rest) == 3 && rest[0] == "audit" && rest[2] == "followup":
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleFollowup(w, r, proj, rest[1])
 
 	// GET /p/<project>/audit/<run_id>/<file>
 	case len(rest) == 3 && rest[0] == "audit":
@@ -803,18 +812,20 @@ func taskRunLabel(label string, tasks []Task) (taskName, tokenName string) {
 
 type auditDetailData struct {
 	pageContext
-	Project        Project
-	Projects       []Project
-	Bundle         AuditBundle
-	Prompt         string
-	LastMessage    string
-	Commands       []Command
-	CodexCommands  []CodexCommand
-	AgentMessage   string
-	Timeline       []ConversationStep
-	Stderr         string
-	RerunCSRFToken string
-	TasksEnabled   bool
+	Project           Project
+	Projects          []Project
+	Bundle            AuditBundle
+	Prompt            string
+	LastMessage       string
+	Commands          []Command
+	CodexCommands     []CodexCommand
+	AgentMessage      string
+	Timeline          []ConversationStep
+	Stderr            string
+	RerunCSRFToken    string
+	FollowupCSRFToken string
+	FollowupEnabled   bool
+	TasksEnabled      bool
 }
 
 func (s *Server) handleAuditDetail(w http.ResponseWriter, r *http.Request, proj *Project, runID string) {
@@ -829,19 +840,21 @@ func (s *Server) handleAuditDetail(w http.ResponseWriter, r *http.Request, proj 
 		return
 	}
 
+	followupEnabled := s.prompt.Enabled && codexSessionsDir(proj.AuditDir, runID) != ""
+	followupPath := "/projects/" + proj.Name + "/audit/" + runID + "/followup"
+
 	data := auditDetailData{
-		pageContext:    newPageContext(),
-		Project:        *proj,
-		Projects:       s.projects,
-		Bundle:         *bundle,
-		RerunCSRFToken: s.csrfToken(w, r, "/projects/"+proj.Name+"/state/rerun"),
-		TasksEnabled:   s.hasTasksForProject(proj.Name),
+		pageContext:       newPageContext(),
+		Project:           *proj,
+		Projects:          s.projects,
+		Bundle:            *bundle,
+		RerunCSRFToken:    s.csrfToken(w, r, "/projects/"+proj.Name+"/state/rerun"),
+		FollowupCSRFToken: s.csrfToken(w, r, followupPath),
+		FollowupEnabled:   followupEnabled,
+		TasksEnabled:      s.hasTasksForProject(proj.Name),
 	}
 
 	dir := filepath.Join(proj.AuditDir, runID)
-	// Read the runner's output. burkebot-codex-run owns audit files as
-	// root with group-readable modes; whether the dashboard can read them
-	// depends on the deployed audit directory group.
 	data.Prompt = readFileString(filepath.Join(dir, "prompt.txt"))
 	data.LastMessage = readFileString(filepath.Join(dir, "last-message.txt"))
 	data.Stderr = readFileString(filepath.Join(dir, "codex-stderr.log"))
