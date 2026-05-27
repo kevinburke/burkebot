@@ -171,25 +171,25 @@
 
             <div class="checkbox-grid">
                 <div class="checkbox-option">
-                    <label><input type="checkbox" name="repo_write" value="1">Allow repo edits</label>
-                    <p>Lets the run modify files inside this repo checkout.</p>
+                    <label><input type="checkbox" name="repo_write" value="1" checked>Repo edits</label>
+                    <p>The agent can modify files in this project's repo checkout. Uncheck for read-only inspection.</p>
                 </div>
                 <div class="checkbox-option">
-                    <label><input type="checkbox" name="workspace_write" value="1">Allow wider Burkebot writes</label>
-                    <p>Expands write access beyond this repo to the broader Burkebot workspace and state directories.</p>
+                    <label><input type="checkbox" name="github_credentials" value="1" checked>GitHub credentials</label>
+                    <p>The agent can push branches and open PRs via git/gh. Uncheck if the prompt only needs local work.</p>
                 </div>
                 <div class="checkbox-option">
-                    <label><input type="checkbox" name="github_credentials" value="1">Expose GitHub credentials</label>
-                    <p>Provides the envdir-backed Burkebot environment so git/gh commands can authenticate non-interactively.</p>
+                    <label><input type="checkbox" name="dangerous" value="1" checked>Full autonomy</label>
+                    <p>The agent runs shell commands without approval. Uncheck to require per-command sandbox approval.</p>
                 </div>
                 <div class="checkbox-option">
-                    <label><input type="checkbox" name="dangerous" value="1">Allow dangerous Codex mode</label>
-                    <p>Bypasses Codex sandbox approvals. Leave this off unless the prompt needs broad tool autonomy.</p>
+                    <label><input type="checkbox" name="workspace_write" value="1">Workspace writes</label>
+                    <p>Extend write access beyond this repo to state files and other repos. Rarely needed.</p>
                 </div>
             </div>
 
             <p class="prompt-note">
-                These checkboxes map to server-enforced policies. Codex still uses the VM's existing egress policy and every run lands in the audit trail.
+                Defaults match burkebot-prompt (repo edits + GitHub creds + full autonomy). All runs are sandboxed by the VM's egress policy and recorded in the audit trail.
             </p>
 
             <div class="prompt-actions">
