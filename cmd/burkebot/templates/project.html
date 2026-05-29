@@ -172,24 +172,24 @@
             <div class="checkbox-grid">
                 <div class="checkbox-option">
                     <label><input type="checkbox" name="repo_write" value="1" checked>Repo edits</label>
-                    <p>The agent can modify files in this project's repo checkout. Uncheck for read-only inspection.</p>
-                </div>
-                <div class="checkbox-option">
-                    <label><input type="checkbox" name="github_credentials" value="1" checked>GitHub credentials</label>
-                    <p>The agent can push branches and open PRs via git/gh. Uncheck if the prompt only needs local work.</p>
+                    <p>The agent can modify files in a fresh clone of this project's upstream. Uncheck for read-only inspection.</p>
                 </div>
                 <div class="checkbox-option">
                     <label><input type="checkbox" name="dangerous" value="1" checked>Full autonomy</label>
                     <p>The agent runs shell commands without approval. Uncheck to require per-command sandbox approval.</p>
                 </div>
                 <div class="checkbox-option">
+                    <label><input type="checkbox" name="open_pr" value="1">Open PR when done</label>
+                    <p>After the run succeeds, push the branch and open a draft PR automatically. Off by default — exploratory runs shouldn't ship. You can also open the PR later from the audit page.</p>
+                </div>
+                <div class="checkbox-option">
                     <label><input type="checkbox" name="workspace_write" value="1">Workspace writes</label>
-                    <p>Extend write access beyond this repo to state files and other repos. Rarely needed.</p>
+                    <p>Extend write access beyond this repo to state files. Rarely needed.</p>
                 </div>
             </div>
 
             <p class="prompt-note">
-                Defaults match burkebot-prompt (repo edits + GitHub creds + full autonomy). All runs are sandboxed by the VM's egress policy and recorded in the audit trail.
+                Each run gets a fresh clone of <code>{{.Project.Repo}}</code> in its own job dir. The agent never holds GitHub credentials &mdash; pushing and PR creation happen through <code>burkebot-publish</code> after the run. All runs are sandboxed by the VM's egress policy and recorded in the audit trail.
             </p>
 
             <div class="prompt-actions">

@@ -40,6 +40,7 @@ type Server struct {
 	api         apiConfig
 	runPrompt   func(*slog.Logger, promptRunnerConfig, Project, promptPolicy, string) (runResult, error)
 	runFollowup func(*slog.Logger, promptRunnerConfig, Project, promptPolicy, string, string) (runResult, error)
+	runPublish  func(*slog.Logger, promptRunnerConfig, Project, *Summary, publishForm) (publishResult, error)
 	runTask     func(*slog.Logger, taskRunRequest) (runResult, error)
 }
 
@@ -67,8 +68,8 @@ func runDashboard(args []string) {
 	enablePromptUI := flagSet.Bool("enable-prompt-ui", false, "Enable ad hoc prompt submission UI")
 	repoRoot := flagSet.String("repo-root", "/srv/burkebot", "Default repo checkout root for prompt submissions")
 	promptRunner := flagSet.String("prompt-runner", "/usr/local/bin/burkebot-codex-run", "Path to the burkebot prompt runner")
-	envdirBinary := flagSet.String("envdir-binary", "/opt/burkebot/bin/envdir", "Path to envdir for GitHub-authenticated prompt runs")
-	envDir := flagSet.String("env-dir", "/opt/burkebot/env", "Envdir directory used for GitHub-authenticated prompt runs")
+	mirrorFetchPath := flagSet.String("mirror-fetch-path", "/usr/local/bin/burkebot-mirror-fetch", "Path to the shared bare-mirror helper invoked by ad-hoc prompt runs to ensure a local clone of the project's upstream")
+	publishPath := flagSet.String("publish-path", "/usr/local/bin/burkebot-publish", "Path to the publish helper that holds GH_TOKEN and runs git push + gh pr create/edit. The dashboard never holds GH_TOKEN itself")
 	botHome := flagSet.String("bot-home", "/home/burkebot", "Home directory for the burkebot user")
 	botUser := flagSet.String("bot-user", "burkebot", "Name of the unprivileged user the runner script drops to via runuser; per-task-API job dirs are chowned to this user")
 	botGroup := flagSet.String("bot-group", "burkebot", "Group for the unprivileged user (matches --bot-user by default)")
@@ -174,16 +175,16 @@ func runDashboard(args []string) {
 	logger.Info("loaded tokens", "count", len(tokens))
 
 	prompt := promptRunnerConfig{
-		Enabled:      *enablePromptUI,
-		RepoRoot:     *repoRoot,
-		RunnerPath:   *promptRunner,
-		EnvdirBinary: *envdirBinary,
-		EnvDir:       *envDir,
-		BotHome:      *botHome,
-		BotUser:      *botUser,
-		BotGroup:     *botGroup,
-		JobsDir:      *jobsDir,
-		CodexAuthDir: *codexAuthDir,
+		Enabled:         *enablePromptUI,
+		RepoRoot:        *repoRoot,
+		RunnerPath:      *promptRunner,
+		MirrorFetchPath: *mirrorFetchPath,
+		PublishPath:     *publishPath,
+		BotHome:         *botHome,
+		BotUser:         *botUser,
+		BotGroup:        *botGroup,
+		JobsDir:         *jobsDir,
+		CodexAuthDir:    *codexAuthDir,
 	}
 
 	s := &Server{
@@ -409,6 +410,14 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleFollowup(w, r, proj, rest[1])
+
+	// POST /projects/<project>/audit/<run_id>/publish
+	case len(rest) == 3 && rest[0] == "audit" && rest[2] == "publish":
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handlePublish(w, r, proj, rest[1])
 
 	// GET /p/<project>/audit/<run_id>/<file>
 	case len(rest) == 3 && rest[0] == "audit":
@@ -822,9 +831,13 @@ type auditDetailData struct {
 	AgentMessage      string
 	Timeline          []ConversationStep
 	Stderr            string
+	Message           string
+	IsError           bool
 	RerunCSRFToken    string
 	FollowupCSRFToken string
 	FollowupEnabled   bool
+	PublishCSRFToken  string
+	PublishEnabled    bool
 	TasksEnabled      bool
 }
 
@@ -842,15 +855,34 @@ func (s *Server) handleAuditDetail(w http.ResponseWriter, r *http.Request, proj 
 
 	followupEnabled := s.prompt.RunnerPath != "" && codexSessionsDir(proj.AuditDir, runID) != ""
 	followupPath := "/projects/" + proj.Name + "/audit/" + runID + "/followup"
+	publishPath := "/projects/" + proj.Name + "/audit/" + runID + "/publish"
+
+	// Publish is only meaningful for runs that produced commits in
+	// a still-extant job repo. JobRepoDir being non-empty means this
+	// was a dashboard ad-hoc run (task API runs don't set it).
+	publishEnabled := false
+	if s.prompt.PublishPath != "" && bundle.Summary != nil &&
+		bundle.Summary.JobRepoDir != "" &&
+		bundle.Summary.BranchName != "" &&
+		bundle.Summary.HeadCommitSHA != "" &&
+		bundle.Summary.HeadCommitSHA != bundle.Summary.BaseCommitSHA {
+		if info, err := os.Stat(bundle.Summary.JobRepoDir); err == nil && info.IsDir() {
+			publishEnabled = true
+		}
+	}
 
 	data := auditDetailData{
 		pageContext:       newPageContext(),
 		Project:           *proj,
 		Projects:          s.projects,
 		Bundle:            *bundle,
+		Message:           r.URL.Query().Get("message"),
+		IsError:           r.URL.Query().Get("error") == "1",
 		RerunCSRFToken:    s.csrfToken(w, r, "/projects/"+proj.Name+"/state/rerun"),
 		FollowupCSRFToken: s.csrfToken(w, r, followupPath),
 		FollowupEnabled:   followupEnabled,
+		PublishCSRFToken:  s.csrfToken(w, r, publishPath),
+		PublishEnabled:    publishEnabled,
 		TasksEnabled:      s.hasTasksForProject(proj.Name),
 	}
 

@@ -11,6 +11,12 @@ import (
 )
 
 // Summary matches the summary.json written by burkebot-codex-run.
+//
+// Fields below the runner's set (JobRepoDir … PRRepo) are added by
+// the dashboard's executePromptRun / executePublish after the run
+// finishes. The runner is unaware of them; the dashboard merges
+// them in via patchSummaryGitState so summary.json stays the single
+// source of truth on the read side.
 type Summary struct {
 	RunID             string          `json:"run_id"`
 	Source            string          `json:"source"`
@@ -24,6 +30,86 @@ type Summary struct {
 	TokenUsage        json.RawMessage `json:"token_usage"`
 	CodexSessionFiles []string        `json:"codex_session_files"`
 	ResumeSessionID   string          `json:"resume_session_id,omitempty"`
+
+	// Dashboard-managed git state (omitted for runs that don't go
+	// through the dashboard publish flow, e.g., task API runs).
+	JobRepoDir    string `json:"job_repo_dir,omitempty"`
+	RootRunID     string `json:"root_run_id,omitempty"`
+	BranchName    string `json:"branch_name,omitempty"`
+	BaseCommitSHA string `json:"base_commit_sha,omitempty"`
+	HeadCommitSHA string `json:"head_commit_sha,omitempty"`
+	LastPushedSHA string `json:"last_pushed_sha,omitempty"`
+	PRNumber      int    `json:"pr_number,omitempty"`
+	PRRepo        string `json:"pr_repo,omitempty"`
+}
+
+// summaryGitState is the subset of Summary fields the dashboard
+// writes back to summary.json. Separate type so the patch logic
+// can't accidentally clobber runner-owned fields like ExitCode or
+// TokenUsage with their zero values.
+type summaryGitState struct {
+	JobRepoDir    string
+	RootRunID     string
+	BranchName    string
+	BaseCommitSHA string
+	HeadCommitSHA string
+	LastPushedSHA string
+	PRNumber      int
+	PRRepo        string
+}
+
+// patchSummaryGitState reads summary.json, merges the non-zero fields
+// of patch into it, and writes it back atomically.
+func patchSummaryGitState(path string, patch summaryGitState) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read summary: %w", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("parse summary: %w", err)
+	}
+	if raw == nil {
+		raw = make(map[string]any)
+	}
+	if patch.JobRepoDir != "" {
+		raw["job_repo_dir"] = patch.JobRepoDir
+	}
+	if patch.RootRunID != "" {
+		raw["root_run_id"] = patch.RootRunID
+	}
+	if patch.BranchName != "" {
+		raw["branch_name"] = patch.BranchName
+	}
+	if patch.BaseCommitSHA != "" {
+		raw["base_commit_sha"] = patch.BaseCommitSHA
+	}
+	if patch.HeadCommitSHA != "" {
+		raw["head_commit_sha"] = patch.HeadCommitSHA
+	}
+	if patch.LastPushedSHA != "" {
+		raw["last_pushed_sha"] = patch.LastPushedSHA
+	}
+	if patch.PRNumber != 0 {
+		raw["pr_number"] = patch.PRNumber
+	}
+	if patch.PRRepo != "" {
+		raw["pr_repo"] = patch.PRRepo
+	}
+	encoded, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal summary: %w", err)
+	}
+	encoded = append(encoded, '\n')
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, encoded, 0o640); err != nil {
+		return fmt.Errorf("write tmp summary: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("rename summary: %w", err)
+	}
+	return nil
 }
 
 // AuditFile holds a filename and its size.

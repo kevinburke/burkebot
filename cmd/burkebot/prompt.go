@@ -1,23 +1,35 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
 
 type promptRunnerConfig struct {
-	Enabled      bool
-	RepoRoot     string
-	RunnerPath   string
-	EnvdirBinary string
-	EnvDir       string
-	BotHome      string
+	Enabled    bool
+	RepoRoot   string
+	RunnerPath string
+
+	// MirrorFetchPath points at /usr/local/bin/burkebot-mirror-fetch,
+	// the shared helper that ensures a bare mirror exists under
+	// /srv/burkebot/<repo>.git and is up to date. Used by both the
+	// ad-hoc and follow-up paths to seed per-run job dirs.
+	MirrorFetchPath string
+
+	// PublishPath points at /usr/local/bin/burkebot-publish, the
+	// orchestration script that holds GH_TOKEN and does git push +
+	// gh pr create/edit. The dashboard never holds GH_TOKEN itself.
+	PublishPath string
+
+	BotHome string
 
 	// BotUser/BotGroup name the unprivileged user the runner script
 	// drops to via `runuser`. The dashboard chowns per-task-API job
@@ -43,10 +55,15 @@ type promptRunnerConfig struct {
 }
 
 type promptPolicy struct {
-	RepoWrite         bool
-	WorkspaceWrite    bool
-	GitHubCredentials bool
-	Dangerous         bool
+	RepoWrite      bool
+	WorkspaceWrite bool
+	Dangerous      bool
+
+	// OpenPR, if true, auto-invokes burkebot-publish after a
+	// successful run to push the agent's commits to a new branch
+	// and open a PR. Defaults to false — most ad-hoc runs are
+	// exploratory and should not ship a PR by accident.
+	OpenPR bool
 }
 
 func (p promptPolicy) labelSuffix() string {
@@ -59,40 +76,44 @@ func (p promptPolicy) labelSuffix() string {
 	if p.WorkspaceWrite {
 		parts = append(parts, "workspace")
 	}
-	if p.GitHubCredentials {
-		parts = append(parts, "github")
-	}
 	if p.Dangerous {
 		parts = append(parts, "dangerous")
 	} else {
 		parts = append(parts, "safe")
 	}
+	if p.OpenPR {
+		parts = append(parts, "openpr")
+	}
 	return strings.Join(parts, "-")
 }
 
-func resolvePromptPolicy(repoWrite, workspaceWrite, githubCredentials, dangerous bool) (promptPolicy, error) {
+func resolvePromptPolicy(repoWrite, workspaceWrite, dangerous, openPR bool) (promptPolicy, error) {
 	if workspaceWrite && !repoWrite {
 		return promptPolicy{}, errors.New("workspace writes require repo edits")
 	}
+	if openPR && !repoWrite {
+		return promptPolicy{}, errors.New("opening a PR requires repo edits")
+	}
 	return promptPolicy{
-		RepoWrite:         repoWrite,
-		WorkspaceWrite:    workspaceWrite,
-		GitHubCredentials: githubCredentials,
-		Dangerous:         dangerous,
+		RepoWrite:      repoWrite,
+		WorkspaceWrite: workspaceWrite,
+		Dangerous:      dangerous,
+		OpenPR:         openPR,
 	}, nil
 }
 
-func buildPromptReadWritePaths(cfg promptRunnerConfig, proj Project, repoDir string, policy promptPolicy) []string {
-	paths := []string{proj.AuditDir, cfg.BotHome}
+// buildPromptReadWritePaths returns the absolute paths the runner's
+// systemd unit may write to.
+//
+// For per-run job dirs we always grant write access to the job dir
+// itself (which contains the repo checkout, HOME, TMP, and cache);
+// workspace-write extends that to the project's state dir.
+func buildPromptReadWritePaths(cfg promptRunnerConfig, proj Project, jobDir string, policy promptPolicy) []string {
+	paths := []string{proj.AuditDir, cfg.BotHome, jobDir, cfg.CodexAuthDir}
 	if policy.WorkspaceWrite {
-		if cfg.RepoRoot != "" {
-			paths = append(paths, cfg.RepoRoot)
-		}
 		if proj.StateFile != "" {
 			paths = append(paths, filepath.Dir(proj.StateFile))
 		}
-	} else if policy.RepoWrite {
-		paths = append(paths, repoDir)
 	}
 	return uniqueNonEmptyPaths(paths)
 }
@@ -114,56 +135,213 @@ func uniqueNonEmptyPaths(paths []string) []string {
 	return out
 }
 
-// executePromptRun is the dashboard prompt UI's entry point. It validates
-// inputs, builds a runnerInvocation describing the sandbox + runner argv
-// for an ad-hoc submission (envdir-wrapped if GitHub creds are enabled,
-// `--safe` unless the user opted out), and hands it to runRunner.
-func executePromptRun(logger *slog.Logger, cfg promptRunnerConfig, proj Project, policy promptPolicy, prompt string) (runResult, error) {
-	repoDir := proj.RepoDirectory(cfg.RepoRoot)
-	if repoDir == "" {
-		return runResult{}, errors.New("project has no repo directory")
+// mirrorInfo holds the metadata burkebot-mirror-fetch prints on stdout.
+type mirrorInfo struct {
+	MirrorPath    string
+	RemoteURL     string
+	DefaultBranch string
+	OnGitServer   bool
+}
+
+// fetchMirror invokes /usr/local/bin/burkebot-mirror-fetch and parses
+// its KEY=value output.
+func fetchMirror(logger *slog.Logger, helperPath, repo string) (mirrorInfo, error) {
+	cmd := exec.Command(helperPath, "--repo", repo)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		logger.Error("mirror-fetch failed", "error", err, "repo", repo, "stderr", stderr.String())
+		return mirrorInfo{}, fmt.Errorf("mirror-fetch: %w (%s)", err, strings.TrimSpace(stderr.String()))
 	}
-	if info, err := os.Stat(repoDir); err != nil || !info.IsDir() {
-		return runResult{}, fmt.Errorf("repo directory %q is not available", repoDir)
+	info := mirrorInfo{}
+	for line := range strings.SplitSeq(stdout.String(), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "MIRROR_PATH":
+			info.MirrorPath = val
+		case "REMOTE_URL":
+			info.RemoteURL = val
+		case "DEFAULT_BRANCH":
+			info.DefaultBranch = val
+		case "ON_GIT_SERVER":
+			info.OnGitServer = val == "1"
+		}
+	}
+	if info.MirrorPath == "" || info.RemoteURL == "" || info.DefaultBranch == "" {
+		return mirrorInfo{}, fmt.Errorf("mirror-fetch returned incomplete metadata: %q", stdout.String())
+	}
+	return info, nil
+}
+
+// branchNameForRun returns the canonical branch name for a run chain
+// rooted at branchToken. Stable across follow-ups (PR 3) so they push
+// to the same branch.
+func branchNameForRun(projectName, branchToken string) string {
+	return fmt.Sprintf("burkebot/%s-%s", projectName, branchToken)
+}
+
+// gitRevParseHead runs `git -C dir rev-parse HEAD` as the bot user.
+// Returns the commit SHA on success.
+func gitRevParseHead(logger *slog.Logger, botUser, dir string) (string, error) {
+	args := []string{"-u", botUser, "--", "git", "-C", dir, "rev-parse", "HEAD"}
+	cmd := exec.Command("runuser", args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		logger.Error("git rev-parse HEAD failed", "error", err, "dir", dir, "stderr", stderr.String())
+		return "", fmt.Errorf("git rev-parse HEAD: %w (%s)", err, strings.TrimSpace(stderr.String()))
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+// prepareAdhocJobRepo seeds an empty per-run repo dir with a clone of
+// the project's local bare mirror, fetches the latest origin, resets
+// to it, and creates a fresh branch the agent will commit on.
+//
+// Returns the base SHA the run starts from.
+func prepareAdhocJobRepo(logger *slog.Logger, cfg promptRunnerConfig, repo, jobRepoDir, branchName string) (mirrorInfo, string, error) {
+	info, err := fetchMirror(logger, cfg.MirrorFetchPath, repo)
+	if err != nil {
+		return mirrorInfo{}, "", err
+	}
+
+	// makeJobDir already ran `git init` in jobRepoDir; replace it with
+	// the mirror clone so origin points at a real upstream.
+	if err := os.RemoveAll(jobRepoDir); err != nil {
+		return mirrorInfo{}, "", fmt.Errorf("clearing jobRepoDir: %w", err)
+	}
+	runuser := func(args ...string) error {
+		fullArgs := append([]string{"-u", cfg.BotUser, "--"}, args...)
+		cmd := exec.Command("runuser", fullArgs...)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("%s: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		}
+		return nil
+	}
+
+	if err := runuser("git", "clone", "--no-local", info.MirrorPath, jobRepoDir); err != nil {
+		return mirrorInfo{}, "", err
+	}
+	if err := runuser("git", "-C", jobRepoDir, "remote", "set-url", "origin", info.RemoteURL); err != nil {
+		return mirrorInfo{}, "", err
+	}
+	if err := runuser("git", "-C", jobRepoDir, "fetch", "origin", info.DefaultBranch); err != nil {
+		return mirrorInfo{}, "", err
+	}
+	if err := runuser("git", "-C", jobRepoDir, "reset", "--hard", "origin/"+info.DefaultBranch); err != nil {
+		return mirrorInfo{}, "", err
+	}
+	if err := runuser("git", "-C", jobRepoDir, "checkout", "-b", branchName); err != nil {
+		return mirrorInfo{}, "", err
+	}
+
+	baseSHA, err := gitRevParseHead(logger, cfg.BotUser, jobRepoDir)
+	if err != nil {
+		return mirrorInfo{}, "", err
+	}
+	return info, baseSHA, nil
+}
+
+// executePromptRun is the dashboard prompt UI's entry point.
+//
+// It creates a per-run job dir, clones the project's local bare
+// mirror into it, checks out a fresh branch, then invokes the
+// codex runner against that job dir. The agent never sees GH_TOKEN —
+// pushing and PR creation happen later through burkebot-publish.
+func executePromptRun(logger *slog.Logger, cfg promptRunnerConfig, proj Project, policy promptPolicy, prompt string) (runResult, error) {
+	if proj.Repo == "" {
+		return runResult{}, errors.New("project has no upstream repo configured (set repo: in projects.json)")
 	}
 	if info, err := os.Stat(cfg.RunnerPath); err != nil || info.IsDir() {
 		return runResult{}, fmt.Errorf("runner binary %q is not available", cfg.RunnerPath)
 	}
-	if policy.GitHubCredentials {
-		if info, err := os.Stat(cfg.EnvdirBinary); err != nil || info.IsDir() {
-			return runResult{}, fmt.Errorf("envdir binary %q is not available", cfg.EnvdirBinary)
-		}
-		if info, err := os.Stat(cfg.EnvDir); err != nil || !info.IsDir() {
-			return runResult{}, fmt.Errorf("envdir directory %q is not available", cfg.EnvDir)
-		}
+	if cfg.MirrorFetchPath == "" {
+		return runResult{}, errors.New("MirrorFetchPath not configured (pass --mirror-fetch-path to the dashboard)")
+	}
+	if info, err := os.Stat(cfg.MirrorFetchPath); err != nil || info.IsDir() {
+		return runResult{}, fmt.Errorf("mirror-fetch helper %q is not available", cfg.MirrorFetchPath)
+	}
+	if cfg.JobsDir == "" {
+		return runResult{}, errors.New("JobsDir not configured (pass --jobs-dir to the dashboard)")
+	}
+	if cfg.CodexAuthDir == "" {
+		return runResult{}, errors.New("CodexAuthDir not configured (pass --codex-auth-dir to the dashboard)")
+	}
+
+	jobDir, jobRepoDir, err := makeJobDir(cfg.JobsDir, cfg.BotUser, cfg.BotGroup, "adhoc")
+	if err != nil {
+		return runResult{}, fmt.Errorf("creating job dir: %w", err)
+	}
+
+	branchToken, err := randomToken(4)
+	if err != nil {
+		return runResult{}, fmt.Errorf("generating branch token: %w", err)
+	}
+	branchName := branchNameForRun(proj.Name, branchToken)
+
+	_, baseSHA, err := prepareAdhocJobRepo(logger, cfg, proj.Repo, jobRepoDir, branchName)
+	if err != nil {
+		return runResult{}, fmt.Errorf("preparing job repo: %w", err)
 	}
 
 	runLabel := fmt.Sprintf("%s-%s", proj.Name, policy.labelSuffix())
 	promptID := fmt.Sprintf("%s-%d", proj.Name, len(prompt))
 
-	command := []string{}
-	if policy.GitHubCredentials {
-		command = append(command, cfg.EnvdirBinary, cfg.EnvDir)
-	}
-	command = append(command,
+	command := []string{
 		cfg.RunnerPath,
 		"--source", "adhoc",
 		"--label", runLabel,
 		"--prompt-id", promptID,
-		"--repo-dir", repoDir,
-	)
+		"--repo-dir", jobRepoDir,
+		"--job-dir", jobDir,
+	}
 	if !policy.Dangerous {
 		command = append(command, "--safe")
 	}
 
 	res, err := runRunner(logger, runnerInvocation{
-		WorkingDirectory: repoDir,
-		ReadWritePaths:   buildPromptReadWritePaths(cfg, proj, repoDir, policy),
+		WorkingDirectory: jobDir,
+		ReadWritePaths:   buildPromptReadWritePaths(cfg, proj, jobDir, policy),
 		Command:          command,
 		Prompt:           prompt,
 	})
 	if err != nil {
 		return res, fmt.Errorf("prompt run failed: %w", err)
+	}
+
+	if res.RunID == "" || res.AuditDir == "" {
+		// Runner produced no audit bundle to patch; nothing to record.
+		return res, nil
+	}
+
+	headSHA, headErr := gitRevParseHead(logger, cfg.BotUser, jobRepoDir)
+	if headErr != nil {
+		// Non-fatal: we still want the run to be visible. Log and
+		// leave headSHA empty so the publish button stays hidden.
+		logger.Warn("could not read HEAD after run", "error", headErr, "job_repo", jobRepoDir)
+	}
+
+	patch := summaryGitState{
+		JobRepoDir:    jobRepoDir,
+		RootRunID:     res.RunID,
+		BranchName:    branchName,
+		BaseCommitSHA: baseSHA,
+		HeadCommitSHA: headSHA,
+		PRRepo:        proj.Repo,
+	}
+	if err := patchSummaryGitState(filepath.Join(res.AuditDir, "summary.json"), patch); err != nil {
+		logger.Warn("could not patch summary.json with git state", "error", err, "audit_dir", res.AuditDir)
 	}
 	return res, nil
 }
@@ -172,14 +350,11 @@ func executePromptRun(logger *slog.Logger, cfg promptRunnerConfig, proj Project,
 // prompt. sessionsDir is the codex-sessions directory from the original
 // audit bundle. The runner is invoked with --resume-session pointing at
 // the exported session files, and --job-dir for a clean environment.
+//
+// PR 2 leaves the follow-up's repo as an empty git-init (same as before
+// this change). PR 3 will clone the origin run's job repo so the
+// follow-up can iterate on the same branch.
 func executeFollowupRun(logger *slog.Logger, cfg promptRunnerConfig, proj Project, policy promptPolicy, sessionsDir, prompt string) (runResult, error) {
-	repoDir := proj.RepoDirectory(cfg.RepoRoot)
-	if repoDir == "" {
-		return runResult{}, errors.New("project has no repo directory")
-	}
-	if info, err := os.Stat(repoDir); err != nil || !info.IsDir() {
-		return runResult{}, fmt.Errorf("repo directory %q is not available", repoDir)
-	}
 	if info, err := os.Stat(cfg.RunnerPath); err != nil || info.IsDir() {
 		return runResult{}, fmt.Errorf("runner binary %q is not available", cfg.RunnerPath)
 	}
@@ -201,11 +376,7 @@ func executeFollowupRun(logger *slog.Logger, cfg promptRunnerConfig, proj Projec
 	runLabel := fmt.Sprintf("%s-%s-followup", proj.Name, policy.labelSuffix())
 	promptID := fmt.Sprintf("%s-followup-%d", proj.Name, len(prompt))
 
-	command := []string{}
-	if policy.GitHubCredentials {
-		command = append(command, cfg.EnvdirBinary, cfg.EnvDir)
-	}
-	command = append(command,
+	command := []string{
 		cfg.RunnerPath,
 		"--source", "followup",
 		"--label", runLabel,
@@ -213,7 +384,7 @@ func executeFollowupRun(logger *slog.Logger, cfg promptRunnerConfig, proj Projec
 		"--repo-dir", jobRepoDir,
 		"--job-dir", jobDir,
 		"--resume-session", sessionsDir,
-	)
+	}
 	if !policy.Dangerous {
 		command = append(command, "--safe")
 	}
@@ -285,8 +456,8 @@ func (s *Server) handleFollowup(w http.ResponseWriter, r *http.Request, proj *Pr
 	policy, err := resolvePromptPolicy(
 		r.FormValue("repo_write") != "",
 		r.FormValue("workspace_write") != "",
-		r.FormValue("github_credentials") != "",
 		r.FormValue("dangerous") != "",
+		false, // follow-ups don't auto-open PRs in PR 2; PR 3 wires this up
 	)
 	if err != nil {
 		redirectAuditMessage(w, r, proj, runID, err.Error(), true)
@@ -328,8 +499,8 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request, proj *Proj
 	policy, err := resolvePromptPolicy(
 		r.FormValue("repo_write") != "",
 		r.FormValue("workspace_write") != "",
-		r.FormValue("github_credentials") != "",
 		r.FormValue("dangerous") != "",
+		r.FormValue("open_pr") != "",
 	)
 	if err != nil {
 		redirectProjectMessage(w, r, proj, err.Error(), true)
@@ -343,6 +514,12 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request, proj *Proj
 
 	result, err := runner(s.logger, s.prompt, *proj, policy, promptText)
 	if result.RunID != "" {
+		// If the operator opted in to auto-publish, kick that off
+		// before redirecting. Failure to publish is recorded on the
+		// audit page so the operator can retry via the button.
+		if policy.OpenPR && err == nil {
+			s.autoPublish(*proj, result)
+		}
 		http.Redirect(w, r, "/projects/"+proj.Name+"/audit/"+result.RunID+"/", http.StatusSeeOther)
 		return
 	}

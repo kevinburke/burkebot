@@ -61,16 +61,15 @@ func TestHandlePromptRunsAndRedirectsToAudit(t *testing.T) {
 		}
 		gotPolicy = policy
 		gotPrompt = prompt
-		return runResult{RunID: "20260323T120000Z-adhoc-r-web-repo-write-github-safe"}, nil
+		return runResult{RunID: "20260323T120000Z-adhoc-r-web-repo-write-safe"}, nil
 	}
 
 	secret := "csrf-cookie"
 	token := s.signCSRF(secret, "/projects/r/prompt")
 	form := url.Values{
-		"csrf_token":         {token},
-		"prompt":             {"fix the failing test"},
-		"repo_write":         {"1"},
-		"github_credentials": {"1"},
+		"csrf_token": {token},
+		"prompt":     {"fix the failing test"},
+		"repo_write": {"1"},
 	}
 	req := httptest.NewRequest("POST", "/projects/r/prompt", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -81,13 +80,13 @@ func TestHandlePromptRunsAndRedirectsToAudit(t *testing.T) {
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("expected 303, got %d", w.Code)
 	}
-	if loc := w.Header().Get("Location"); loc != "/projects/r/audit/20260323T120000Z-adhoc-r-web-repo-write-github-safe/" {
+	if loc := w.Header().Get("Location"); loc != "/projects/r/audit/20260323T120000Z-adhoc-r-web-repo-write-safe/" {
 		t.Fatalf("unexpected redirect location %q", loc)
 	}
 	if gotPrompt != "fix the failing test" {
 		t.Fatalf("unexpected prompt %q", gotPrompt)
 	}
-	if !gotPolicy.RepoWrite || !gotPolicy.GitHubCredentials || gotPolicy.WorkspaceWrite || gotPolicy.Dangerous {
+	if !gotPolicy.RepoWrite || gotPolicy.WorkspaceWrite || gotPolicy.Dangerous || gotPolicy.OpenPR {
 		t.Fatalf("unexpected policy %+v", gotPolicy)
 	}
 }

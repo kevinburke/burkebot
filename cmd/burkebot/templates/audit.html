@@ -170,6 +170,35 @@
             cursor: pointer;
         }
         .followup-btn:hover { background: #2563eb; }
+        .flash {
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-bottom: 16px;
+            font-size: 0.95em;
+        }
+        .flash-success { background: #dcfce7; color: #15803d; }
+        .flash-error   { background: #fee2e2; color: #b91c1c; }
+        .publish-input {
+            width: 100%;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            padding: 8px 12px;
+            font: inherit;
+            margin-bottom: 8px;
+        }
+        .publish-input.publish-body { min-height: 100px; resize: vertical; font-family: "SF Mono", Monaco, Consolas, monospace; font-size: 0.85em; }
+        .publish-meta { font-size: 0.85em; color: #555; margin-bottom: 8px; }
+        .publish-meta code { font-family: "SF Mono", Monaco, Consolas, monospace; }
+        .publish-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            background: #16a34a;
+            color: white;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .publish-btn:hover { background: #15803d; }
     </style>
 </head>
 <body>
@@ -179,6 +208,12 @@
         <a href="/projects/{{.Project.Name}}/state">PR State</a>
         {{if .TasksEnabled}}<a href="/projects/{{.Project.Name}}/tasks">Tasks</a>{{end}}
     </div>
+
+    {{if .Message}}
+    <div class="flash {{if .IsError}}flash-error{{else}}flash-success{{end}}">
+        {{.Message}}
+    </div>
+    {{end}}
 
     <div class="header-row">
         <h1>{{.Bundle.RunID}}</h1>
@@ -327,6 +362,42 @@
 
             <div class="followup-actions">
                 <button type="submit" class="followup-btn">Send Follow-up</button>
+            </div>
+        </form>
+    </div>
+    {{end}}
+
+    {{if .PublishEnabled}}
+    <h2>
+        {{if .Bundle.Summary.PRNumber}}Update PR #{{.Bundle.Summary.PRNumber}}{{else}}Open PR{{end}}
+    </h2>
+    <div class="card">
+        <div class="publish-meta">
+            Branch <code>{{.Bundle.Summary.BranchName}}</code> on
+            <code>{{.Bundle.Summary.PRRepo}}</code>
+            &middot; HEAD <code>{{truncate .Bundle.Summary.HeadCommitSHA 8}}</code>
+            {{if .Bundle.Summary.LastPushedSHA}}
+            &middot; last pushed <code>{{truncate .Bundle.Summary.LastPushedSHA 8}}</code> (will force-push)
+            {{end}}
+            {{if .Bundle.Summary.PRNumber}}
+            &middot; <a href="https://github.com/{{.Bundle.Summary.PRRepo}}/pull/{{.Bundle.Summary.PRNumber}}" target="_blank">view PR</a>
+            {{end}}
+        </div>
+        <form method="POST" action="/projects/{{.Project.Name}}/audit/{{.Bundle.RunID}}/publish">
+            <input type="hidden" name="csrf_token" value="{{.PublishCSRFToken}}">
+            <input class="publish-input" type="text" name="pr_title"
+                   placeholder="PR title (leave blank to use the latest commit subject)">
+            <textarea class="publish-input publish-body" name="pr_body"
+                      placeholder="PR body (leave blank to use the commit log)"></textarea>
+            <div class="checkbox-grid">
+                <div class="checkbox-option">
+                    <label><input type="checkbox" name="draft" value="1" {{if not .Bundle.Summary.PRNumber}}checked{{end}}>Draft</label>
+                </div>
+            </div>
+            <div class="followup-actions">
+                <button type="submit" class="publish-btn">
+                    {{if .Bundle.Summary.PRNumber}}Update PR{{else}}Open PR{{end}}
+                </button>
             </div>
         </form>
     </div>
