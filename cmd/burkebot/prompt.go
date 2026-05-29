@@ -203,11 +203,27 @@ func gitRevParseHead(logger *slog.Logger, botUser, dir string) (string, error) {
 	return strings.TrimSpace(stdout.String()), nil
 }
 
+// runuserAs returns a closure that runs `git` (or any command) as the
+// bot user via runuser, capturing stderr in the returned error.
+func runuserAs(botUser string) func(args ...string) error {
+	return func(args ...string) error {
+		fullArgs := append([]string{"-u", botUser, "--"}, args...)
+		cmd := exec.Command("runuser", fullArgs...)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("%s: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		}
+		return nil
+	}
+}
+
 // prepareAdhocJobRepo seeds an empty per-run repo dir with a clone of
 // the project's local bare mirror, fetches the latest origin, resets
 // to it, and creates a fresh branch the agent will commit on.
 //
-// Returns the base SHA the run starts from.
+// Returns the mirror info (callers need RemoteURL for summary.json)
+// and the base SHA the run starts from.
 func prepareAdhocJobRepo(logger *slog.Logger, cfg promptRunnerConfig, repo, jobRepoDir, branchName string) (mirrorInfo, string, error) {
 	info, err := fetchMirror(logger, cfg.MirrorFetchPath, repo)
 	if err != nil {
@@ -219,16 +235,7 @@ func prepareAdhocJobRepo(logger *slog.Logger, cfg promptRunnerConfig, repo, jobR
 	if err := os.RemoveAll(jobRepoDir); err != nil {
 		return mirrorInfo{}, "", fmt.Errorf("clearing jobRepoDir: %w", err)
 	}
-	runuser := func(args ...string) error {
-		fullArgs := append([]string{"-u", cfg.BotUser, "--"}, args...)
-		cmd := exec.Command("runuser", fullArgs...)
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("%s: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
-		}
-		return nil
-	}
+	runuser := runuserAs(cfg.BotUser)
 
 	if err := runuser("git", "clone", "--no-local", info.MirrorPath, jobRepoDir); err != nil {
 		return mirrorInfo{}, "", err
@@ -251,6 +258,53 @@ func prepareAdhocJobRepo(logger *slog.Logger, cfg promptRunnerConfig, repo, jobR
 		return mirrorInfo{}, "", err
 	}
 	return info, baseSHA, nil
+}
+
+// prepareFollowupJobRepo seeds an empty per-run repo dir with a clone
+// of the ORIGIN run's job repo, points its origin remote at the
+// canonical upstream (so burkebot-publish can later `git push origin`
+// to GitHub instead of the prev job repo), and confirms the branch
+// the prior run left behind is checked out.
+//
+// Returns the base SHA, which is the HEAD the follow-up starts from
+// (= the origin run's HeadCommitSHA).
+func prepareFollowupJobRepo(logger *slog.Logger, cfg promptRunnerConfig, originJobRepoDir, remoteURL, branchName, jobRepoDir string) (string, error) {
+	if info, err := os.Stat(originJobRepoDir); err != nil || !info.IsDir() {
+		return "", fmt.Errorf("origin run's job repo dir %q is no longer available (job dirs are ephemeral; the prior run may have aged out)", originJobRepoDir)
+	}
+
+	// makeJobDir already ran `git init` in jobRepoDir; replace it
+	// with a clone of the origin job repo so the prior run's commits
+	// are present and the same branch is checked out.
+	if err := os.RemoveAll(jobRepoDir); err != nil {
+		return "", fmt.Errorf("clearing jobRepoDir: %w", err)
+	}
+	runuser := runuserAs(cfg.BotUser)
+
+	if err := runuser("git", "clone", "--no-local", originJobRepoDir, jobRepoDir); err != nil {
+		return "", err
+	}
+	// Point origin at the canonical upstream; cloning from a local
+	// path would otherwise leave origin pointing at the prior job
+	// repo, and burkebot-publish would push there instead of GitHub.
+	if remoteURL != "" {
+		if err := runuser("git", "-C", jobRepoDir, "remote", "set-url", "origin", remoteURL); err != nil {
+			return "", err
+		}
+	}
+	// The clone follows the source's HEAD, which the prior run left
+	// on branchName. checkout -B is idempotent — if the local branch
+	// already matches HEAD, it's a no-op; if HEAD is detached (it
+	// shouldn't be), this restores the branch ref.
+	if err := runuser("git", "-C", jobRepoDir, "checkout", "-B", branchName); err != nil {
+		return "", err
+	}
+
+	baseSHA, err := gitRevParseHead(logger, cfg.BotUser, jobRepoDir)
+	if err != nil {
+		return "", err
+	}
+	return baseSHA, nil
 }
 
 // executePromptRun is the dashboard prompt UI's entry point.
@@ -290,7 +344,7 @@ func executePromptRun(logger *slog.Logger, cfg promptRunnerConfig, proj Project,
 	}
 	branchName := branchNameForRun(proj.Name, branchToken)
 
-	_, baseSHA, err := prepareAdhocJobRepo(logger, cfg, proj.Repo, jobRepoDir, branchName)
+	mirror, baseSHA, err := prepareAdhocJobRepo(logger, cfg, proj.Repo, jobRepoDir, branchName)
 	if err != nil {
 		return runResult{}, fmt.Errorf("preparing job repo: %w", err)
 	}
@@ -339,6 +393,7 @@ func executePromptRun(logger *slog.Logger, cfg promptRunnerConfig, proj Project,
 		BaseCommitSHA: baseSHA,
 		HeadCommitSHA: headSHA,
 		PRRepo:        proj.Repo,
+		RemoteURL:     mirror.RemoteURL,
 	}
 	if err := patchSummaryGitState(filepath.Join(res.AuditDir, "summary.json"), patch); err != nil {
 		logger.Warn("could not patch summary.json with git state", "error", err, "audit_dir", res.AuditDir)
@@ -347,14 +402,15 @@ func executePromptRun(logger *slog.Logger, cfg promptRunnerConfig, proj Project,
 }
 
 // executeFollowupRun resumes a previous Codex session with a follow-up
-// prompt. sessionsDir is the codex-sessions directory from the original
-// audit bundle. The runner is invoked with --resume-session pointing at
-// the exported session files, and --job-dir for a clean environment.
+// prompt. The follow-up's job repo is cloned from the origin run's
+// JobRepoDir so the agent inherits the prior commits and can continue
+// committing on the same branch (which a later publish will then
+// force-push to update the existing PR).
 //
-// PR 2 leaves the follow-up's repo as an empty git-init (same as before
-// this change). PR 3 will clone the origin run's job repo so the
-// follow-up can iterate on the same branch.
-func executeFollowupRun(logger *slog.Logger, cfg promptRunnerConfig, proj Project, policy promptPolicy, sessionsDir, prompt string) (runResult, error) {
+// origin is the origin run's summary. It must already carry
+// dashboard-managed git state (JobRepoDir, BranchName, etc.) — i.e.,
+// follow-ups against task-API or cron runs are rejected.
+func executeFollowupRun(logger *slog.Logger, cfg promptRunnerConfig, proj Project, policy promptPolicy, origin *Summary, sessionsDir, prompt string) (runResult, error) {
 	if info, err := os.Stat(cfg.RunnerPath); err != nil || info.IsDir() {
 		return runResult{}, fmt.Errorf("runner binary %q is not available", cfg.RunnerPath)
 	}
@@ -367,10 +423,21 @@ func executeFollowupRun(logger *slog.Logger, cfg promptRunnerConfig, proj Projec
 	if cfg.CodexAuthDir == "" {
 		return runResult{}, errors.New("CodexAuthDir not configured (pass --codex-auth-dir to the dashboard)")
 	}
+	if origin == nil {
+		return runResult{}, errors.New("origin run summary missing; cannot inherit git state")
+	}
+	if origin.JobRepoDir == "" || origin.BranchName == "" {
+		return runResult{}, errors.New("origin run is not a dashboard ad-hoc run; only those carry the job repo and branch follow-ups inherit")
+	}
 
 	jobDir, jobRepoDir, err := makeJobDir(cfg.JobsDir, cfg.BotUser, cfg.BotGroup, "followup")
 	if err != nil {
 		return runResult{}, fmt.Errorf("creating job dir: %w", err)
+	}
+
+	baseSHA, err := prepareFollowupJobRepo(logger, cfg, origin.JobRepoDir, origin.RemoteURL, origin.BranchName, jobRepoDir)
+	if err != nil {
+		return runResult{}, fmt.Errorf("preparing follow-up job repo: %w", err)
 	}
 
 	runLabel := fmt.Sprintf("%s-%s-followup", proj.Name, policy.labelSuffix())
@@ -391,12 +458,44 @@ func executeFollowupRun(logger *slog.Logger, cfg promptRunnerConfig, proj Projec
 
 	res, err := runRunner(logger, runnerInvocation{
 		WorkingDirectory: jobDir,
-		ReadWritePaths:   uniqueNonEmptyPaths([]string{jobDir, proj.AuditDir, cfg.CodexAuthDir}),
+		ReadWritePaths:   buildPromptReadWritePaths(cfg, proj, jobDir, policy),
 		Command:          command,
 		Prompt:           prompt,
 	})
 	if err != nil {
 		return res, fmt.Errorf("followup run failed: %w", err)
+	}
+
+	if res.RunID == "" || res.AuditDir == "" {
+		return res, nil
+	}
+
+	headSHA, headErr := gitRevParseHead(logger, cfg.BotUser, jobRepoDir)
+	if headErr != nil {
+		logger.Warn("could not read HEAD after follow-up run", "error", headErr, "job_repo", jobRepoDir)
+	}
+
+	// RootRunID identifies the chain (first run's RunID). All
+	// follow-ups in the chain carry the same RootRunID, so a UI
+	// later can group runs by it.
+	rootRunID := origin.RootRunID
+	if rootRunID == "" {
+		rootRunID = origin.RunID
+	}
+
+	patch := summaryGitState{
+		JobRepoDir:    jobRepoDir,
+		RootRunID:     rootRunID,
+		BranchName:    origin.BranchName,
+		BaseCommitSHA: baseSHA,
+		HeadCommitSHA: headSHA,
+		LastPushedSHA: origin.LastPushedSHA,
+		PRNumber:      origin.PRNumber,
+		PRRepo:        origin.PRRepo,
+		RemoteURL:     origin.RemoteURL,
+	}
+	if err := patchSummaryGitState(filepath.Join(res.AuditDir, "summary.json"), patch); err != nil {
+		logger.Warn("could not patch summary.json with git state", "error", err, "audit_dir", res.AuditDir)
 	}
 	return res, nil
 }
@@ -447,6 +546,12 @@ func (s *Server) handleFollowup(w http.ResponseWriter, r *http.Request, proj *Pr
 		return
 	}
 
+	originBundle, err := loadBundle(proj.AuditDir, runID)
+	if err != nil || originBundle == nil || originBundle.Summary == nil {
+		redirectAuditMessage(w, r, proj, runID, "Origin run summary missing; cannot start follow-up", true)
+		return
+	}
+
 	promptText := strings.TrimSpace(r.FormValue("prompt"))
 	if promptText == "" {
 		redirectAuditMessage(w, r, proj, runID, "Follow-up prompt cannot be empty", true)
@@ -457,7 +562,7 @@ func (s *Server) handleFollowup(w http.ResponseWriter, r *http.Request, proj *Pr
 		r.FormValue("repo_write") != "",
 		r.FormValue("workspace_write") != "",
 		r.FormValue("dangerous") != "",
-		false, // follow-ups don't auto-open PRs in PR 2; PR 3 wires this up
+		r.FormValue("open_pr") != "",
 	)
 	if err != nil {
 		redirectAuditMessage(w, r, proj, runID, err.Error(), true)
@@ -469,8 +574,11 @@ func (s *Server) handleFollowup(w http.ResponseWriter, r *http.Request, proj *Pr
 		runner = executeFollowupRun
 	}
 
-	result, err := runner(s.logger, s.prompt, *proj, policy, sessionsDir, promptText)
+	result, err := runner(s.logger, s.prompt, *proj, policy, originBundle.Summary, sessionsDir, promptText)
 	if result.RunID != "" {
+		if policy.OpenPR && err == nil {
+			s.autoPublish(*proj, result)
+		}
 		http.Redirect(w, r, "/projects/"+proj.Name+"/audit/"+result.RunID+"/", http.StatusSeeOther)
 		return
 	}

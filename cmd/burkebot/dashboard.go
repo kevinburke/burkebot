@@ -39,7 +39,7 @@ type Server struct {
 	prompt      promptRunnerConfig
 	api         apiConfig
 	runPrompt   func(*slog.Logger, promptRunnerConfig, Project, promptPolicy, string) (runResult, error)
-	runFollowup func(*slog.Logger, promptRunnerConfig, Project, promptPolicy, string, string) (runResult, error)
+	runFollowup func(*slog.Logger, promptRunnerConfig, Project, promptPolicy, *Summary, string, string) (runResult, error)
 	runPublish  func(*slog.Logger, promptRunnerConfig, Project, *Summary, publishForm) (publishResult, error)
 	runTask     func(*slog.Logger, taskRunRequest) (runResult, error)
 }
@@ -853,7 +853,22 @@ func (s *Server) handleAuditDetail(w http.ResponseWriter, r *http.Request, proj 
 		return
 	}
 
+	// Follow-ups now inherit git state by cloning the origin run's
+	// job repo dir. That means they require: (a) session files
+	// (Codex --resume-session), (b) a dashboard-managed origin run
+	// (BranchName + JobRepoDir set in summary), and (c) the origin's
+	// job dir still on disk (job dirs are ephemeral and may have
+	// aged out).
 	followupEnabled := s.prompt.RunnerPath != "" && codexSessionsDir(proj.AuditDir, runID) != ""
+	if followupEnabled && bundle.Summary != nil {
+		if bundle.Summary.JobRepoDir == "" || bundle.Summary.BranchName == "" {
+			followupEnabled = false
+		} else if info, err := os.Stat(bundle.Summary.JobRepoDir); err != nil || !info.IsDir() {
+			followupEnabled = false
+		}
+	} else if followupEnabled {
+		followupEnabled = false
+	}
 	followupPath := "/projects/" + proj.Name + "/audit/" + runID + "/followup"
 	publishPath := "/projects/" + proj.Name + "/audit/" + runID + "/publish"
 

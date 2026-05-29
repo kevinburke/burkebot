@@ -488,8 +488,22 @@ func TestLoadCodexEventsViaTimeline(t *testing.T) {
 func TestHandleAuditDetailFollowupForm(t *testing.T) {
 	tmp := t.TempDir()
 	auditDir := filepath.Join(tmp, "audit")
-	runID := "20260315T120000Z-pr-returns-pr-42"
-	writeTestAudit(t, auditDir, runID)
+	runID := "20260315T120000Z-adhoc-r-web-repo-write-safe"
+	// Follow-up now requires dashboard-managed git state on the
+	// origin run and the origin's job dir still on disk.
+	jobRepoDir := filepath.Join(tmp, "jobs", "origin", "repo")
+	if err := os.MkdirAll(jobRepoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestAuditSummary(t, auditDir, runID, Summary{
+		Source:        "adhoc",
+		JobRepoDir:    jobRepoDir,
+		BranchName:    "burkebot/r-abcd",
+		BaseCommitSHA: "aaaa",
+		HeadCommitSHA: "bbbb",
+		RemoteURL:     "https://github.com/kevinburke/returns.git",
+		PRRepo:        "kevinburke/returns",
+	})
 
 	sessionsDir := filepath.Join(auditDir, runID, "codex-sessions")
 	os.MkdirAll(sessionsDir, 0o755)
@@ -512,6 +526,32 @@ func TestHandleAuditDetailFollowupForm(t *testing.T) {
 	}
 	if !strings.Contains(body, "/followup") {
 		t.Error("expected followup action URL in body")
+	}
+}
+
+// Follow-up form should be hidden when the origin run lacks
+// dashboard-managed git state (e.g., a cron-driven run with sessions
+// but no JobRepoDir). In that case the form would only error on submit.
+func TestHandleAuditDetailNoFollowupWithoutGitState(t *testing.T) {
+	tmp := t.TempDir()
+	auditDir := filepath.Join(tmp, "audit")
+	runID := "20260315T120000Z-pr-returns-pr-42"
+	writeTestAudit(t, auditDir, runID) // no JobRepoDir in default summary
+
+	sessionsDir := filepath.Join(auditDir, runID, "codex-sessions")
+	os.MkdirAll(sessionsDir, 0o755)
+	os.WriteFile(filepath.Join(sessionsDir, "session.jsonl"), []byte(`{}`), 0o644)
+
+	s := newTestServer(t, []Project{{Name: "r", AuditDir: auditDir, StateFile: filepath.Join(tmp, "s.json")}})
+	s.prompt = promptRunnerConfig{RunnerPath: "/usr/local/bin/burkebot-codex-run"}
+
+	mux := s.registerRoutes()
+	req := httptest.NewRequest("GET", "/projects/r/audit/"+runID, nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if strings.Contains(w.Body.String(), "Send Follow-up") {
+		t.Error("expected follow-up form hidden when origin lacks git state")
 	}
 }
 
@@ -551,12 +591,15 @@ func TestHandleFollowup(t *testing.T) {
 	newRunID := "20260315T130000Z-followup-r-web-read-only-safe-followup"
 	s := newTestServer(t, []Project{{Name: "r", AuditDir: auditDir, StateFile: filepath.Join(tmp, "s.json")}})
 	s.prompt = promptRunnerConfig{RunnerPath: "/usr/local/bin/burkebot-codex-run"}
-	s.runFollowup = func(logger *slog.Logger, cfg promptRunnerConfig, proj Project, policy promptPolicy, sessions, prompt string) (runResult, error) {
+	s.runFollowup = func(logger *slog.Logger, cfg promptRunnerConfig, proj Project, policy promptPolicy, origin *Summary, sessions, prompt string) (runResult, error) {
 		if sessions != sessionsDir {
 			t.Errorf("expected sessions dir %q, got %q", sessionsDir, sessions)
 		}
 		if prompt != "please continue" {
 			t.Errorf("expected prompt 'please continue', got %q", prompt)
+		}
+		if origin == nil || origin.RunID != runID {
+			t.Errorf("expected origin summary for %q, got %+v", runID, origin)
 		}
 		return runResult{RunID: newRunID}, nil
 	}

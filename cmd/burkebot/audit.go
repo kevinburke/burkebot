@@ -41,6 +41,13 @@ type Summary struct {
 	LastPushedSHA string `json:"last_pushed_sha,omitempty"`
 	PRNumber      int    `json:"pr_number,omitempty"`
 	PRRepo        string `json:"pr_repo,omitempty"`
+
+	// RemoteURL is the canonical upstream URL (https://github.com/...
+	// or git@git-server:...). Captured on the root run; carried into
+	// follow-ups so they can re-point their cloned-from-prev-job-dir
+	// origin remote at the actual upstream — burkebot-publish must
+	// push to GitHub, not to the prior job repo.
+	RemoteURL string `json:"remote_url,omitempty"`
 }
 
 // summaryGitState is the subset of Summary fields the dashboard
@@ -56,6 +63,7 @@ type summaryGitState struct {
 	LastPushedSHA string
 	PRNumber      int
 	PRRepo        string
+	RemoteURL     string
 }
 
 // patchSummaryGitState reads summary.json, merges the non-zero fields
@@ -95,6 +103,9 @@ func patchSummaryGitState(path string, patch summaryGitState) error {
 	}
 	if patch.PRRepo != "" {
 		raw["pr_repo"] = patch.PRRepo
+	}
+	if patch.RemoteURL != "" {
+		raw["remote_url"] = patch.RemoteURL
 	}
 	encoded, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {

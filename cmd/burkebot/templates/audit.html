@@ -347,6 +347,15 @@
     {{if .FollowupEnabled}}
     <h2>Send Follow-up</h2>
     <div class="card">
+        <p class="publish-meta">
+            Follow-up clones the prior run's job repo at
+            <code>{{truncate .Bundle.Summary.HeadCommitSHA 8}}</code>
+            on branch <code>{{.Bundle.Summary.BranchName}}</code>.
+            Any new commits append to that branch.
+            {{if .Bundle.Summary.PRNumber}}
+            Publishing will update PR #{{.Bundle.Summary.PRNumber}} via force-push.
+            {{end}}
+        </p>
         <form method="POST" action="/projects/{{.Project.Name}}/audit/{{.Bundle.RunID}}/followup">
             <input type="hidden" name="csrf_token" value="{{.FollowupCSRFToken}}">
             <textarea name="prompt" placeholder="Send a follow-up message to continue this conversation." class="followup-textarea"></textarea>
@@ -357,6 +366,9 @@
                 </div>
                 <div class="checkbox-option">
                     <label><input type="checkbox" name="dangerous" value="1" checked>Full autonomy</label>
+                </div>
+                <div class="checkbox-option">
+                    <label><input type="checkbox" name="open_pr" value="1">{{if .Bundle.Summary.PRNumber}}Update PR{{else}}Open PR{{end}} when done</label>
                 </div>
             </div>
 

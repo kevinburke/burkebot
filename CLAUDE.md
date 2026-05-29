@@ -8,44 +8,49 @@ shell scripts) lives in
 
 ## Execution paths
 
-There are three distinct ways a Codex run is kicked off today. They share
-the same audit-bundle layout but differ on repo-dir strategy and on who
-holds GitHub credentials.
+There are four ways a Codex run is kicked off. They share the same
+audit-bundle layout but differ on repo-dir strategy and on who holds
+GitHub credentials.
 
 1. **Cron-driven prompt** (operator runs `burkebot-prompts/run-*.sh` on
-   their laptop → SSH → `burkebot-prompt.sh.j2` on the host). Uses a bare
-   mirror under `/srv/burkebot/<slug>.git`, fresh clone per run into a
-   per-run job dir. Agent runs sandboxed with NO `GH_TOKEN`. Prompt is
-   expected to emit a JSON outcome (`outcome push_branch`, etc.). After
-   the agent finishes, `burkebot-publish` (running outside the sandbox
-   with `GH_TOKEN` from envdir) consumes the decision and pushes / opens
-   the PR.
+   their laptop → SSH → `burkebot-prompt.sh.j2` on the host). Calls
+   `burkebot-mirror-fetch` to ensure a bare mirror under
+   `/srv/burkebot/mirrors/<repo>.git`, clones fresh into a per-run job
+   dir. Agent runs sandboxed with NO `GH_TOKEN`. Prompt is expected to
+   emit a JSON outcome (`outcome push_branch`, etc.). After the agent
+   finishes, `burkebot-publish` (running outside the sandbox with
+   `GH_TOKEN` from envdir) consumes the decision and pushes / opens the
+   PR.
 
 2. **Dashboard task API** (`POST /api/tasks/<task>/runs`). Caller drops
    input files into a fresh per-run job dir; the runner `cd`s in and runs
    Codex with `--job-dir`. `git init` only — no remote, no push.
 
-3. **Dashboard ad-hoc prompt** (`POST /projects/<project>/prompt`). Today:
-   runs inside a *shared* checkout at `proj.RepoDirectory(cfg.RepoRoot)`,
-   optionally envdir-wrapped to inject `GH_TOKEN` into the agent's env. No
-   structured outcome; the agent itself shells out to git/gh if it wants
-   to ship a PR. **In flight (see
-   `/Users/kevin/.claude/plans/breezy-churning-feigenbaum.md`):** moving
-   this to the same per-run-job-dir + clone-from-mirror model as the cron
-   flow, with a dashboard-driven "Open / Update PR" step that invokes
-   `burkebot-publish`. Once that's done, the agent never holds
-   `GH_TOKEN` in any path.
-
-   **Known stale assumption:** the project page today errors with
-   `repo directory "/srv/burkebot/<slug>" is not available`. That path is
-   a checkout that nothing creates — `/srv/burkebot/` only holds bare
-   mirrors. Fixed by the per-run-job-dir migration.
+3. **Dashboard ad-hoc prompt** (`POST /projects/<project>/prompt`).
+   Mirrors the cron flow's shape: dashboard calls `burkebot-mirror-fetch`,
+   clones into a fresh job dir under `/srv/burkebot-jobs/`, checks out
+   `burkebot/<project>-<token>`, then invokes the runner. Agent has no
+   `GH_TOKEN`. After the run, dashboard captures the base/head SHAs and
+   patches `summary.json` with `JobRepoDir`, `BranchName`, `RemoteURL`,
+   etc. The audit page exposes an "Open / Update PR" button that shells
+   out to `burkebot-publish` (or auto-runs it if "Open PR when done" was
+   ticked at submit).
 
 4. **Dashboard follow-up** (`POST /projects/<project>/audit/<run>/followup`).
-   Per-run job dir with `git init` (no inheritance from the origin run's
-   git state). Uses Codex `--resume-session` for conversational
-   continuity only. The plan above adds clone-from-origin-job-dir so
-   follow-ups can iterate on the same branch and update the same PR.
+   Per-run job dir cloned **from the origin run's `JobRepoDir`** so the
+   follow-up inherits all of the origin's commits and starts on the same
+   branch. After the clone, `origin` is re-pointed at the canonical
+   upstream (carried as `RemoteURL` in the origin's summary) so a later
+   publish pushes to GitHub, not to the prior job repo. Codex
+   `--resume-session` preserves conversational continuity on top.
+   Publishing a follow-up uses `--force-with-lease` against the recorded
+   `LastPushedSHA` to update the same PR branch.
+
+   The follow-up form is hidden when the origin run lacks
+   dashboard-managed git state (cron / task-API runs), or when the
+   origin's job dir has been cleaned up (no current retention policy;
+   job dirs accumulate under `/srv/burkebot-jobs/` until manually
+   pruned).
 
 ## Authority boundary
 
@@ -71,11 +76,12 @@ Each run writes to `<AuditDir>/<RunID>/` where `RunID` is
 
 Files:
 
-- `summary.json` — `Summary` struct in `cmd/burkebot/audit.go`. Includes
-  RunID, Source, Label, PromptID, timing, ExitCode, TokenUsage,
-  CodexSessionFiles, ResumeSessionID. The plan adds JobRepoDir,
-  RootRunID, BranchName, BaseCommitSHA, HeadCommitSHA, LastPushedSHA,
-  PRNumber, PRRepo for the publish flow.
+- `summary.json` — `Summary` struct in `cmd/burkebot/audit.go`. Runner
+  writes RunID, Source, Label, PromptID, timing, ExitCode, TokenUsage,
+  CodexSessionFiles, ResumeSessionID. Dashboard patches in (via
+  `patchSummaryGitState`, atomic) JobRepoDir, RootRunID, BranchName,
+  BaseCommitSHA, HeadCommitSHA, LastPushedSHA, PRNumber, PRRepo, and
+  RemoteURL for the publish flow.
 - `prompt.txt` — operator's prompt (shown as preview on project page).
 - `last-message.txt` — agent's final message.
 - `codex-events.jsonl` — newline-delimited JSON, each line
