@@ -91,6 +91,23 @@ func TestHandlePromptRunsAndRedirectsToAudit(t *testing.T) {
 	}
 }
 
+func TestRepoForMirrorFetch(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"kevinburke/finance-automations", "github.com/kevinburke/finance-automations"},
+		{"github.com/kevinburke/returns", "github.com/kevinburke/returns"},
+		{"gitlab.example.com/team/proj", "gitlab.example.com/team/proj"},
+		{"  kevinburke/foo  ", "github.com/kevinburke/foo"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := repoForMirrorFetch(tc.in); got != tc.want {
+			t.Errorf("repoForMirrorFetch(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestHandlePromptRejectsInvalidPermissionCombo(t *testing.T) {
 	tmp := t.TempDir()
 	s := newTestServer(t, []Project{{

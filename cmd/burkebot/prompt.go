@@ -143,6 +143,27 @@ type mirrorInfo struct {
 	OnGitServer   bool
 }
 
+// repoForMirrorFetch converts Project.Repo (typically "owner/repo")
+// to the GOPATH-style "host/owner/repo" path burkebot-mirror-fetch
+// expects, defaulting host to github.com when none is present. The
+// publish flow keeps the bare owner/repo because `gh` consumes it
+// directly; only mirror-fetch (which interpolates the value into a
+// clone URL) needs the host.
+func repoForMirrorFetch(repo string) string {
+	repo = strings.TrimSpace(repo)
+	if repo == "" {
+		return ""
+	}
+	// First segment with a dot means a host is already present (e.g.
+	// github.com/, git-server/, gitlab.example.com/). Anything else
+	// is shorthand and we default to github.com.
+	first, _, ok := strings.Cut(repo, "/")
+	if ok && strings.Contains(first, ".") {
+		return repo
+	}
+	return "github.com/" + repo
+}
+
 // fetchMirror invokes /usr/local/bin/burkebot-mirror-fetch and parses
 // its KEY=value output.
 func fetchMirror(logger *slog.Logger, helperPath, repo string) (mirrorInfo, error) {
@@ -344,7 +365,7 @@ func executePromptRun(logger *slog.Logger, cfg promptRunnerConfig, proj Project,
 	}
 	branchName := branchNameForRun(proj.Name, branchToken)
 
-	mirror, baseSHA, err := prepareAdhocJobRepo(logger, cfg, proj.Repo, jobRepoDir, branchName)
+	mirror, baseSHA, err := prepareAdhocJobRepo(logger, cfg, repoForMirrorFetch(proj.Repo), jobRepoDir, branchName)
 	if err != nil {
 		return runResult{}, fmt.Errorf("preparing job repo: %w", err)
 	}
