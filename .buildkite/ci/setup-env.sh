@@ -25,7 +25,7 @@ if [[ -z "${BUILDKITE_CI_ENV_READY:-}" ]]; then
   # a module-selected toolchain at runtime.
   export GOTOOLCHAIN="${GOTOOLCHAIN:-local}"
   export DIFFER_VERSION="${DIFFER_VERSION:-v0.0.0-20260403230520-c0574ebcacb2}"
-  export STATICCHECK_VERSION="${STATICCHECK_VERSION:-v0.7.0}"
+  export STATICCHECK_VERSION="${STATICCHECK_VERSION:-v0.8.1}"
 
   # Keep CI caches out of the checkout so clean-checkout jobs do not trip over
   # read-only Go and tool cache files left behind by previous runs.
