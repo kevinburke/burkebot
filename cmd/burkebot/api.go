@@ -204,13 +204,66 @@ func (s *Server) handleTaskRun(w http.ResponseWriter, r *http.Request, taskName 
 		return
 	}
 
+	// Before trusting anything the model said, check whether it was
+	// able to do anything at all. Codex reports a failure to spawn its
+	// tooling as an `error` item in the event stream and then finishes
+	// the turn normally, exiting 0 -- the model answers from the prompt
+	// alone and says so politely in prose that still validates against
+	// the task schema. That is not a hypothetical: it is what published
+	// five meeting pages whose summary was an apology for not being
+	// able to read their own agenda, and what left them there for four
+	// days because every layer below this one reported success.
+	//
+	// The runner script performs the same check and exits non-zero, so
+	// in production this rarely fires. It is duplicated here on purpose:
+	// the runner lives in a different repository and is the thing being
+	// guarded against, and this handler is the one place that turns a
+	// codex run into an HTTP 200 that another service will act on.
+	runDir := filepath.Join(proj.AuditDir, result.RunID)
+	eventsPath := filepath.Join(runDir, "codex-events.jsonl")
+	if _, err := os.Stat(eventsPath); err != nil {
+		s.logger.Error("run produced no event stream", "task", task.Name, "run_id", result.RunID, "error", err)
+		writeRestError(w, &resterror.Error{
+			Status: http.StatusBadGateway,
+			ID:     "runner_no_events",
+			Title:  "Runner produced no codex event stream",
+			Detail: "cannot verify the run succeeded without codex-events.jsonl",
+		})
+		return
+	}
+	codexErrors, err := loadCodexErrors(eventsPath)
+	if err != nil {
+		s.logger.Error("reading codex events", "task", task.Name, "run_id", result.RunID, "error", err)
+		writeRestError(w, &resterror.Error{
+			Status: http.StatusBadGateway,
+			ID:     "runner_events_unreadable",
+			Title:  "Could not read the codex event stream",
+			Detail: err.Error(),
+		})
+		return
+	}
+	if len(codexErrors) > 0 {
+		s.logger.Error("codex reported errors during the run",
+			"task", task.Name,
+			"run_id", result.RunID,
+			"errors", strings.Join(codexErrors, "; "),
+		)
+		writeRestError(w, &resterror.Error{
+			Status: http.StatusBadGateway,
+			ID:     "codex_run_error",
+			Title:  "Codex reported errors during the run",
+			Detail: strings.Join(codexErrors, "; "),
+		})
+		return
+	}
+
 	// Read the runner's output. burkebot-codex-run writes the model's
 	// last message to last-message.txt under the audit bundle.
 	// Whether the dashboard process can read it depends on how the
 	// runner role lays down permissions; today they're root:burkebot
 	// 0640 (set by roles/burkebot in caracal-server) so any process
 	// in the burkebot group can read it.
-	lastMsgPath := filepath.Join(proj.AuditDir, result.RunID, "last-message.txt")
+	lastMsgPath := filepath.Join(runDir, "last-message.txt")
 	rawOutput, err := os.ReadFile(lastMsgPath)
 	if err != nil {
 		s.logger.Error("reading runner output", "task", task.Name, "run_id", result.RunID, "error", err)

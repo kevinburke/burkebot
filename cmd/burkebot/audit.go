@@ -31,6 +31,12 @@ type Summary struct {
 	CodexSessionFiles []string        `json:"codex_session_files"`
 	ResumeSessionID   string          `json:"resume_session_id,omitempty"`
 
+	// CodexErrors carries the message of every `error` item codex
+	// emitted during the run. Codex exits 0 even when it emits these,
+	// so ExitCode alone does not tell you whether the run worked --
+	// see loadCodexErrors.
+	CodexErrors []string `json:"codex_errors,omitempty"`
+
 	// Dashboard-managed git state (omitted for runs that don't go
 	// through the dashboard publish flow, e.g., task API runs).
 	JobRepoDir    string `json:"job_repo_dir,omitempty"`
@@ -282,6 +288,7 @@ type CodexItem struct {
 	ExitCode         *int            `json:"exit_code"`
 	Status           string          `json:"status"`
 	Text             string          `json:"text"`
+	Message          string          `json:"message"`
 	Items            json.RawMessage `json:"items"`
 }
 
@@ -293,10 +300,11 @@ type CodexCommand struct {
 	Status   string
 }
 
-// ConversationStep is one step in the agent's conversation: either an
-// agent message or a command execution, in the order they occurred.
+// ConversationStep is one step in the agent's conversation: an agent
+// message, a command execution, or an error codex reported, in the
+// order they occurred.
 type ConversationStep struct {
-	Type     string // "agent_message" or "command"
+	Type     string // "agent_message", "command", or "error"
 	Text     string // agent_message text
 	Command  string // command_execution command
 	Output   string // command_execution output
@@ -354,6 +362,15 @@ func loadConversationTimeline(path string) ([]ConversationStep, error) {
 				Type: "agent_message",
 				Text: item.Text,
 			})
+		case "error":
+			// Codex reports tooling/environment failures as their own
+			// item type and then carries on, exiting 0. Dropping these
+			// on the floor is how a run in which the agent could not
+			// execute a single command still looked like a success.
+			steps = append(steps, ConversationStep{
+				Type: "error",
+				Text: item.Message,
+			})
 		}
 	}
 	return steps, scanner.Err()
@@ -380,6 +397,37 @@ func loadCodexEvents(path string) (commands []CodexCommand, agentMessage string,
 		}
 	}
 	return commands, agentMessage, nil
+}
+
+// loadCodexErrors returns the message of every `error` item in a run's
+// codex-events.jsonl.
+//
+// This is the check that ExitCode cannot do. Codex emits an `error`
+// item and keeps going, so a run where every single `exec` the model
+// attempted failed still exits 0 and still produces a confident final
+// message -- the model simply answers from the prompt alone and
+// apologizes for what it could not read. Between 2026-08-29 and
+// 2026-09-04 every burkebot run on this host was in that state,
+// because a codex upgrade started routing the model's exec tool
+// through a `codex-code-mode-host` binary that was not installed. All
+// 35 runs before that window have zero error items and all 36 runs
+// inside it have exactly one, so the signal is not a heuristic.
+//
+// A missing events file is not an error here: callers that require the
+// file to exist check for it themselves, so that a run with no events
+// at all reports the more specific failure.
+func loadCodexErrors(path string) ([]string, error) {
+	steps, err := loadConversationTimeline(path)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, step := range steps {
+		if step.Type == "error" {
+			out = append(out, step.Text)
+		}
+	}
+	return out, nil
 }
 
 // codexSessionsDir returns the path to the codex-sessions directory

@@ -86,9 +86,24 @@ Files:
 - `last-message.txt` — agent's final message.
 - `codex-events.jsonl` — newline-delimited JSON, each line
   `{type: "item.completed", item: {...}}` with item types
-  `command_execution` (Command + AggregatedOutput + ExitCode + Status)
-  or `agent_message` (Text). Parsed by `loadConversationTimeline` in
-  `audit.go:210-263` to render the timeline on the audit detail page.
+  `command_execution` (Command + AggregatedOutput + ExitCode + Status),
+  `agent_message` (Text), or `error` (Message). Parsed by
+  `loadConversationTimeline` to render the timeline on the audit detail
+  page.
+
+  **`exit_code` in summary.json does not tell you whether a run
+  worked.** Codex emits an `error` item for a tooling or environment
+  failure, carries on, and exits 0: the model answers from the prompt
+  alone and says so in prose that still validates against the task
+  schema. From 2026-08-29 to 2026-09-04 every run on this host was in
+  that state (a codex upgrade began routing the model's `exec` tool
+  through a `codex-code-mode-host` binary that was not installed), and
+  it surfaced only as published meeting summaries apologizing for not
+  being able to read their own agenda. `loadCodexErrors` is the check
+  that catches it; `handleTaskRun` returns 502 rather than 200 when it
+  finds anything, and the runner script in caracal-server
+  (`roles/burkebot/templates/burkebot-codex-run.sh.j2`) makes the same
+  check and exits non-zero so the cron and dashboard paths fail too.
 - `commands.jsonl` — separate record of agent tool calls.
 - `codex-stderr.log` — runner's stderr.
 - `codex-sessions/` — exported Codex session files for resumption (used

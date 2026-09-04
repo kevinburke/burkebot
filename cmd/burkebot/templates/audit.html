@@ -95,6 +95,18 @@
             align-items: center;
         }
         .codex-cmd-header.failed { background: #fef2f2; }
+        /* Codex reports tooling failures as their own event and then
+           exits 0, so this is the only place a run that could not
+           execute a single command looks different from a good one. */
+        .timeline-error {
+            margin-bottom: 8px;
+            border: 1px solid #fca5a5;
+            border-left: 4px solid #b91c1c;
+            border-radius: 6px;
+            background: #fef2f2;
+            padding: 8px 12px;
+        }
+        .timeline-error .output { background: #fff; border-color: #fecaca; }
         .codex-cmd-output {
             padding: 8px 12px;
             font-family: "SF Mono", Monaco, Consolas, monospace;
@@ -264,6 +276,11 @@
         {{if eq $step.Type "agent_message"}}
         <div class="timeline-message">
             <div class="timeline-label"><span class="badge badge-agent">Agent</span> <span class="timeline-step">step {{$i}}</span></div>
+            <div class="output">{{$step.Text}}</div>
+        </div>
+        {{else if eq $step.Type "error"}}
+        <div class="timeline-error">
+            <div class="timeline-label"><span class="badge badge-failure">Codex error</span> <span class="timeline-step">step {{$i}}</span></div>
             <div class="output">{{$step.Text}}</div>
         </div>
         {{else if eq $step.Type "command"}}

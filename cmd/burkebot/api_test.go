@@ -14,11 +14,36 @@ import (
 	"testing"
 )
 
+// codeModeHostErrorEvent is the exact line codex wrote to
+// codex-events.jsonl on every burkebot run between 2026-08-29 and
+// 2026-09-04, copied off the host. Codex emitted it, executed nothing,
+// answered from the prompt alone, and exited 0.
+const codeModeHostErrorEvent = `{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Code Mode is unavailable because failed to spawn code-mode host /usr/local/bin/codex-code-mode-host: host executable was not found. Code mode will fail closed; enable ` + "`features.code_mode_host`" + ` and install ` + "`codex-code-mode-host`" + `."}}`
+
+// healthyCodexEvents is what a run that actually did something looks
+// like: it ran a command that succeeded and then said its piece.
+func healthyCodexEvents(finalMessage string) string {
+	msg, err := json.Marshal(finalMessage)
+	if err != nil {
+		panic(err)
+	}
+	return `{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"cat agenda.txt","exit_code":0,"status":"completed","aggregated_output":"1. Roll Call"}}` + "\n" +
+		`{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":` + string(msg) + `}}` + "\n"
+}
+
 // fakeTaskAPIServer wires up a Server with the API enabled, a
 // mock runner that pretends codex produced canned output, and a
 // project pointing at a temp audit dir. Returns the assembled Server
 // and the bearer token configured on the test token.
 func fakeTaskAPIServer(t *testing.T, schemaJSON, modelOutput string) (*Server, string) {
+	t.Helper()
+	return fakeTaskAPIServerWithEvents(t, schemaJSON, modelOutput, healthyCodexEvents(modelOutput))
+}
+
+// fakeTaskAPIServerWithEvents is fakeTaskAPIServer with control over
+// the event stream the fake runner leaves behind, so a test can stage a
+// run in which codex reported an error.
+func fakeTaskAPIServerWithEvents(t *testing.T, schemaJSON, modelOutput, events string) (*Server, string) {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -98,6 +123,11 @@ func fakeTaskAPIServer(t *testing.T, schemaJSON, modelOutput string) (*Server, s
 			}
 			if err := os.WriteFile(filepath.Join(runDir, "last-message.txt"), []byte(modelOutput), 0o640); err != nil {
 				return runResult{}, err
+			}
+			if events != "" {
+				if err := os.WriteFile(filepath.Join(runDir, "codex-events.jsonl"), []byte(events), 0o640); err != nil {
+					return runResult{}, err
+				}
 			}
 			return runResult{RunID: runID}, nil
 		},
@@ -215,5 +245,81 @@ func TestTaskAPI_SchemaValidation(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "schema") {
 		t.Errorf("expected schema-validation error, got %s", w.Body.String())
+	}
+}
+
+// TestTaskAPI_CodexErrorIsNotSuccess is the regression test for the
+// outage this guard exists for. The model output below is well formed
+// and passes schema validation -- that is the whole problem. What makes
+// the run a failure is the error item in the event stream, which says
+// the agent never got to read the inputs it is summarizing.
+func TestTaskAPI_CodexErrorIsNotSuccess(t *testing.T) {
+	output := `{"meeting_summary":"Unable to read the agenda and transcript.","items":[]}`
+	s, tok := fakeTaskAPIServerWithEvents(t, annotationSchema, output,
+		codeModeHostErrorEvent+"\n"+healthyCodexEvents(output))
+
+	w := postJSON(s, "/api/tasks/annotate/runs", tok, map[string]string{
+		"agenda":     "1. Roll Call",
+		"transcript": "[00:00:01] hi",
+	})
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "code-mode host") {
+		t.Errorf("error body should name the codex failure, got %s", w.Body.String())
+	}
+}
+
+// TestTaskAPI_MissingEventsIsNotSuccess: without the event stream there
+// is no way to tell a working run from the one above, so the handler
+// must refuse rather than assume.
+func TestTaskAPI_MissingEventsIsNotSuccess(t *testing.T) {
+	output := `{"meeting_summary":"hi","items":[]}`
+	s, tok := fakeTaskAPIServerWithEvents(t, annotationSchema, output, "")
+
+	w := postJSON(s, "/api/tasks/annotate/runs", tok, map[string]string{
+		"agenda":     "1. Roll Call",
+		"transcript": "[00:00:01] hi",
+	})
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "runner_no_events") {
+		t.Errorf("expected runner_no_events, got %s", w.Body.String())
+	}
+}
+
+// TestLoadCodexErrorsReadsRealOutageStream checks the parser against the
+// bytes codex actually wrote, and checks that a healthy stream reports
+// nothing -- a check that returns errors for good runs would be worse
+// than no check, since it would train us to ignore it.
+func TestLoadCodexErrorsReadsRealOutageStream(t *testing.T) {
+	dir := t.TempDir()
+
+	broken := filepath.Join(dir, "broken.jsonl")
+	if err := os.WriteFile(broken, []byte(codeModeHostErrorEvent+"\n"+healthyCodexEvents("done")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	errs, err := loadCodexErrors(broken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(errs) != 1 {
+		t.Fatalf("got %d errors, want 1: %v", len(errs), errs)
+	}
+	if !strings.Contains(errs[0], "codex-code-mode-host") {
+		t.Errorf("message does not name the missing binary: %q", errs[0])
+	}
+
+	healthy := filepath.Join(dir, "healthy.jsonl")
+	if err := os.WriteFile(healthy, []byte(healthyCodexEvents("done")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	errs, err = loadCodexErrors(healthy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(errs) != 0 {
+		t.Errorf("healthy stream reported errors: %v", errs)
 	}
 }
