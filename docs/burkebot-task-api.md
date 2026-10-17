@@ -122,6 +122,10 @@ Branch on `id`, not on `title` or `detail`. Stable IDs:
 | 413 | `input_too_large` | Input value exceeds the task's `max_bytes` |
 | 500 | `server_error` | Misconfigured task, scratch-dir failure, etc. |
 | 502 | `runner_failed` | Codex runner exited non-zero or hit the task's timeout |
+| 502 | `runner_no_events` | Runner exited 0 but left no `codex-events.jsonl`, so the run cannot be verified |
+| 502 | `runner_events_unreadable` | `codex-events.jsonl` exists but could not be read |
+| 502 | `codex_run_error` | Codex reported an `error` item (e.g. its tooling failed to start) and answered anyway |
+| 502 | `task_inputs_unread` | The task declares inputs, but the run never completed a command, so it cannot have read them |
 | 502 | `runner_no_output` | Runner exited 0 but did not produce a `last-message.txt` |
 | 502 | `invalid_output` | Runner output failed JSON Schema validation |
 
@@ -129,6 +133,9 @@ Branch on `id`, not on `title` or `detail`. Stable IDs:
 failed. Retry is usually appropriate for `runner_failed` and
 `runner_no_output`; `invalid_output` more often means a model regression
 or a schema mismatch and should be investigated rather than retried.
+`codex_run_error` and `task_inputs_unread` mean the agent's tooling is
+broken on the burkebot host. Retrying will fail the same way until
+someone fixes the host, so callers should cap their retries.
 
 ## Idempotency and retries
 

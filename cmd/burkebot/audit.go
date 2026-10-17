@@ -430,6 +430,30 @@ func loadCodexErrors(path string) ([]string, error) {
 	return out, nil
 }
 
+// countSuccessfulCommands returns how many command_execution items in a
+// run's codex-events.jsonl completed with exit code 0.
+//
+// It catches what loadCodexErrors cannot: a run whose tooling failed
+// without codex reporting an error item. From 2026-10-07 codex could
+// not start its bubblewrap sandbox nested inside srt; the model's exec
+// failed before codex recorded a command_execution item, no error item
+// was emitted, and codex exited 0. Every annotate-meeting run in that
+// window has zero command_execution items; healthy runs read their
+// input files with at least one successful command.
+func countSuccessfulCommands(path string) (int, error) {
+	steps, err := loadConversationTimeline(path)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, step := range steps {
+		if step.Type == "command" && step.Status == "completed" && step.ExitCode == 0 {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // codexSessionsDir returns the path to the codex-sessions directory
 // within an audit bundle, or "" if it does not exist.
 func codexSessionsDir(auditDir, runID string) string {

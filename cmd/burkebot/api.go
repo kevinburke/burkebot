@@ -257,6 +257,39 @@ func (s *Server) handleTaskRun(w http.ResponseWriter, r *http.Request, taskName 
 		return
 	}
 
+	// Task inputs reach the agent only as files in its working
+	// directory (see renderPrompt: the template gets paths, not
+	// values), so a task with inputs whose run never completed a
+	// command cannot have read them. Codex does not always say so: in
+	// October 2026 its nested sandbox failed before any command was
+	// recorded, with no error item, and 38 meeting annotations came
+	// back schema-valid and empty. See countSuccessfulCommands.
+	if len(task.Inputs) > 0 {
+		ok, err := countSuccessfulCommands(eventsPath)
+		if err != nil {
+			s.logger.Error("reading codex events", "task", task.Name, "run_id", result.RunID, "error", err)
+			writeRestError(w, &resterror.Error{
+				Status: http.StatusBadGateway,
+				ID:     "runner_events_unreadable",
+				Title:  "Could not read the codex event stream",
+				Detail: err.Error(),
+			})
+			return
+		}
+		if ok == 0 {
+			s.logger.Error("task run completed no commands, so it cannot have read its inputs",
+				"task", task.Name, "run_id", result.RunID)
+			writeRestError(w, &resterror.Error{
+				Status: http.StatusBadGateway,
+				ID:     "task_inputs_unread",
+				Title:  "Task run never successfully ran a command, so it could not have read its inputs",
+				Detail: fmt.Sprintf("inputs %s are only available as files; see audit run %s",
+					strings.Join(taskInputNames(task), ", "), result.RunID),
+			})
+			return
+		}
+	}
+
 	// Read the runner's output. burkebot-codex-run writes the model's
 	// last message to last-message.txt under the audit bundle.
 	// Whether the dashboard process can read it depends on how the

@@ -323,3 +323,46 @@ func TestLoadCodexErrorsReadsRealOutageStream(t *testing.T) {
 		t.Errorf("healthy stream reported errors: %v", errs)
 	}
 }
+
+// nestedSandboxOutageEvents is codex-events.jsonl from an annotate-meeting
+// run on 2026-10-16, copied off the host (the usage line is trimmed).
+// From 2026-10-07 codex could not start its bubblewrap sandbox inside
+// srt, so the model's one exec failed before codex recorded a
+// command_execution item, and codex reported no error item either. The
+// model then honestly said it could not read its inputs, in output that
+// matched the schema, and codex exited 0. Every check above passed.
+const nestedSandboxOutageEvents = `{"type":"thread.started","thread_id":"01a144c3-4d3f-7ca3-976b-8beee7a2ecc1"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’ll read the agenda and transcript, then match substantive discussions to their starting timestamps.\n"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"{\"meeting_summary\":\"\",\"meta_description\":\"Meeting annotations are unavailable because the agenda and transcript could not be read; a later attempt is needed to process the source files.\",\"items\":[],\"items_omitted_reason\":\"inputs-unreadable\"}"}}
+{"type":"turn.completed"}
+`
+
+// TestTaskAPI_RunThatExecutedNothingIsNotSuccess: task inputs reach the
+// agent only as files, so a run with inputs that never ran a command
+// successfully cannot have read them, whatever its output says.
+func TestTaskAPI_RunThatExecutedNothingIsNotSuccess(t *testing.T) {
+	output := `{"meeting_summary":"hi","items":[]}`
+	for _, tc := range []struct {
+		name   string
+		events string
+	}{
+		{"2026-10 nested sandbox outage", nestedSandboxOutageEvents},
+		{"every command failed", `{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"cat agenda.txt","exit_code":1,"status":"failed","aggregated_output":"error building bubblewrap command: Read-only file system (os error 30)"}}` + "\n" +
+			`{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"I could not read the files."}}` + "\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, tok := fakeTaskAPIServerWithEvents(t, annotationSchema, output, tc.events)
+			w := postJSON(s, "/api/tasks/annotate/runs", tok, map[string]string{
+				"agenda":     "1. Roll Call",
+				"transcript": "[00:00:01] hi",
+			})
+			if w.Code != http.StatusBadGateway {
+				t.Fatalf("expected 502, got %d body=%s", w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), "task_inputs_unread") {
+				t.Errorf("expected task_inputs_unread, got %s", w.Body.String())
+			}
+		})
+	}
+}
